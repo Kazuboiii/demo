@@ -113,3 +113,16 @@ See `DEMO_GUIDE.md` for step-by-step client presentation workflows (rotating QR,
 - All GPS and QR data is simulated/fictional for demonstration purposes.
 - No real patient health records or medical diagnoses are stored.
 - Cleartext HTTP is allowed in the mobile app for development only; use HTTPS in production.
+
+## Passwordless role access
+
+The web entry page now offers six shared roles without an email or password.
+Deploy both backend and frontend changes. No Render shell or manual seeding is
+required: POST /api/v1/auth/role-login/ creates the selected shared identity and
+reference roles/divisions on first use. Existing personal accounts are preserved.
+Normal tokens and role/division permissions still apply after selection. Anyone
+who can reach this deployment can select Super Admin and access its capabilities.
+Activity is attributed to shared role accounts, not individual people.
+ROLE_LOGIN defaults to true; setting it to false disables these endpoints (the
+role-only entry page will then be unavailable). Database migrations must already
+be applied as in the normal deployment.

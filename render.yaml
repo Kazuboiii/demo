@@ -13,6 +13,8 @@ services:
       # Demo login is required by the demo instance: /auth/demo-login/ is
       # strictly limited to accounts seeded & flagged is_demo by
       # `manage.py seed_demo` and can never reach regular accounts.
+      - key: ROLE_LOGIN
+        value: "true"
       - key: DEMO_LOGIN
         value: "true"
       - key: DJANGO_SECRET_KEY

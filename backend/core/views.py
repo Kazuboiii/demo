@@ -75,6 +75,22 @@ class AuthViewSet(viewsets.ViewSet):
             )
         return Response(_tokens_for_user(user))
 
+    @action(detail=False, methods=["get", "post"], authentication_classes=[], url_path="role-login")
+    def role_login(self, request):
+        from .role_access import ROLE_CHOICES, shared_role_user
+
+        if not settings.ROLE_LOGIN:
+            return Response({"detail": "Role access is disabled."}, status=404)
+        if request.method == "GET":
+            return Response([{"code": code, "name": name} for code, name, _ in ROLE_CHOICES])
+        code = request.data.get("role")
+        if not isinstance(code, str) or code not in {r[0] for r in ROLE_CHOICES}:
+            return Response({"detail": "Choose a valid role."}, status=400)
+        user = shared_role_user(code)
+        if not user.is_active or not user.is_approved or user.role_code != code:
+            return Response({"detail": "This role is currently unavailable."}, status=403)
+        return Response(_tokens_for_user(user))
+
     def _demo_login_allowed(self):
         return bool(getattr(settings, "DEMO_LOGIN", False))
 

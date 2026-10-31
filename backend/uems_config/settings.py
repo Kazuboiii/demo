@@ -64,6 +64,8 @@ APP_ENV = os.getenv("APP_ENV", "development")
 # accounts can never be accessed through it. Seeding itself is always a
 # manual, explicit management command - nothing here runs on deploy.
 DEMO_LOGIN = env_bool("DEMO_LOGIN", False)
+# Public shared-role access requested for this deployment; no password required.
+ROLE_LOGIN = env_bool("ROLE_LOGIN", True)
 
 # Application definition
 
