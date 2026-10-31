@@ -59,6 +59,12 @@ FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000").rstr
 PUBLIC_API_BASE_URL = os.getenv("PUBLIC_API_BASE_URL", "/api/v1").rstrip("/")
 APP_ENV = os.getenv("APP_ENV", "development")
 
+# Opt-in demo login. When True, /auth/demo-login/ may issue tokens ONLY for
+# accounts flagged is_demo=True (seeded by `manage.py seed_demo`). Regular
+# accounts can never be accessed through it. Seeding itself is always a
+# manual, explicit management command - nothing here runs on deploy.
+DEMO_LOGIN = env_bool("DEMO_LOGIN", False)
+
 # Application definition
 
 DJANGO_APPS = [

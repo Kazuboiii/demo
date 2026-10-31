@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'lan_discovery.dart';
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../core/storage.dart';
@@ -17,11 +16,16 @@ class ApiClient {
 
   /// Build-time API endpoint, e.g.
   /// `flutter build apk --dart-define=API_BASE_URL=https://api.example.com`.
-  /// Release builds require either this or a URL saved in Settings.
   static const String configuredBaseUrl = String.fromEnvironment(
     'API_BASE_URL',
     defaultValue: '',
   );
+
+  /// Deployed UEMS backend. Without any user configuration the app talks to
+  /// this server, so it works on any network (mobile data, hotel Wi-Fi, ...),
+  /// not only on the same Wi-Fi as a laptop running the backend locally.
+  /// Users can override it in Settings or via --dart-define for local dev.
+  static const String defaultBaseUrl = 'https://demo-jpuo.onrender.com';
 
   final http.Client _client;
   final Future<List<String>> Function() _discoverServers;
@@ -53,8 +57,9 @@ class ApiClient {
   /// Base path including "/api/v1".
   ///
   /// Priority: URL saved in Settings → `--dart-define=API_BASE_URL` →
-  /// local network discovery (debug builds only). Release builds never fall
-  /// back to a hard-coded localhost address.
+  /// the deployed cloud backend. The fallback means the app is usable from
+  /// any network; LAN discovery remains available through the explicit
+  /// "Auto-detect UEMS server" button for local development.
   Future<String> get _base async {
     final pref = await Storage.prefs;
     final host = pref.getString('api_base_url');
@@ -68,17 +73,7 @@ class ApiClient {
       return normalizeBase(configuredBaseUrl);
     }
 
-    if (kReleaseMode) {
-      throw const FormatException(
-        'No API server is configured. Rebuild with '
-        '--dart-define=API_BASE_URL=https://your-server.example.com or set '
-        'the server URL in Settings.',
-      );
-    }
-
-    // Discover the laptop on this network; never persist a temporary LAN IP.
-    final detected = await detectApiBase();
-    return detected;
+    return normalizeBase(defaultBaseUrl);
   }
 
   String? _discoveredBase;

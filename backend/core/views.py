@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib.auth import authenticate
 from django.contrib.auth import get_user_model
 from rest_framework import status, viewsets
@@ -71,6 +72,58 @@ class AuthViewSet(viewsets.ViewSet):
             return Response(
                 {"detail": "Account is not approved."},
                 status=status.HTTP_401_UNAUTHORIZED,
+            )
+        return Response(_tokens_for_user(user))
+
+    def _demo_login_allowed(self):
+        return bool(getattr(settings, "DEMO_LOGIN", False))
+
+    @action(detail=False, methods=["get"], authentication_classes=[], url_path="demo-accounts")
+    def demo_accounts(self, request):
+        """List seeded demo accounts for the login-page selector.
+
+        Returns emails, display names and roles only - never passwords - and
+        only when demo login is explicitly enabled on this server.
+        """
+        if not self._demo_login_allowed():
+            return Response(
+                {"detail": "Demo login is not enabled on this server."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        accounts = User.objects.filter(is_demo=True, is_active=True, is_approved=True).order_by(
+            "pk"
+        )
+        data = [
+            {
+                "email": user.email,
+                "name": (user.get_full_name() or user.email).strip(),
+                "role_code": user.role_code,
+                "role_name": user.role.name if user.role else None,
+                "business_unit": user.business_unit_code,
+            }
+            for user in accounts
+        ]
+        return Response(data)
+
+    @action(detail=False, methods=["post"], authentication_classes=[], url_path="demo-login")
+    def demo_login(self, request):
+        """One-click login for seeded demo accounts only.
+
+        Explicitly gated by the DEMO_LOGIN environment setting and the
+        per-account `is_demo` flag. It reuses the standard JWT issue path and
+        can never reach a regular account (is_demo is False by default).
+        """
+        if not self._demo_login_allowed():
+            return Response(
+                {"detail": "Demo login is not enabled on this server."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        email = (request.data.get("email") or "").strip().lower()
+        user = User.objects.filter(email=email, is_demo=True).first()
+        if user is None or not user.is_active or not user.is_approved:
+            return Response(
+                {"detail": "Demo account is not available."},
+                status=status.HTTP_403_FORBIDDEN,
             )
         return Response(_tokens_for_user(user))
 
@@ -167,7 +220,10 @@ class UserViewSet(viewsets.ModelViewSet):
             return qs.none()
         if user.is_superuser or user.has_role("super_admin"):
             return qs
-        return qs.filter(business_unit=user.business_unit)
+        # Non-admin roles may see (never manage) only their own account: the
+        # 'admin' module requires 'administer' permission, which only
+        # super_admin holds in the central matrix.
+        return qs.filter(pk=user.pk)
 
 
 class EmployeeViewSet(viewsets.ModelViewSet):

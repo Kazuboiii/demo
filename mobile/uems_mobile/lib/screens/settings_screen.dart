@@ -62,20 +62,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
               style: TextStyle(fontWeight: FontWeight.w600),
             ),
             const Text(
-              'The laptop is found automatically on the same Wi-Fi. Only enter a URL to override automatic discovery.',
+              'The app connects to the UEMS cloud server automatically on any network. '
+              'Only enter a URL here to point it at a different server (e.g. a '
+              'local development machine on the same Wi-Fi).',
               style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
             const SizedBox(height: 8),
             TextField(
               controller: _ctrl,
               decoration: const InputDecoration(
-                hintText: 'http://10.0.2.2:8000',
+                hintText: 'https://your-server.onrender.com',
                 border: OutlineInputBorder(),
               ),
             ),
             const SizedBox(height: 16),
             const Text(
-              'Default: automatic discovery. Leave the field empty to use it.',
+              'Default: the deployed UEMS server. Leave the field empty to use it '
+              '(use Auto-detect on the sign-in screen for a local laptop server).',
               style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
             const SizedBox(height: 24),

@@ -22,9 +22,20 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  void _fill(String email) {
-    _emailCtrl.text = email;
-    _passCtrl.text = 'admin123';
+  Future<void> _demoLogin(String email) async {
+    final state = context.read<AppState>();
+    await state.demoLogin(email);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          state.error ?? 'Demo signed in',
+          style: const TextStyle(color: Colors.white),
+        ),
+        backgroundColor:
+            state.error == null ? const Color(0xFF0D9488) : Colors.red,
+      ),
+    );
   }
 
   Future<void> _login() async {
@@ -147,8 +158,10 @@ class _LoginScreenState extends State<LoginScreen> {
                 const Divider(),
                 const SizedBox(height: 16),
                 const Text(
-                  'Connect to the laptop Wi-Fi, then sign in. Server setup is automatic.',
+                  'Works on any network - the app connects to the UEMS cloud '
+                  'server automatically. No laptop or shared Wi-Fi needed.',
                   style: TextStyle(fontSize: 12, color: Colors.grey),
+                  textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 8),
                 SizedBox(
@@ -163,27 +176,28 @@ class _LoginScreenState extends State<LoginScreen> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Icon(Icons.wifi, size: 16),
-                    label: const Text('Auto-detect UEMS server'),
+                    label: const Text('Auto-detect local server'),
                   ),
                 ),
                 const SizedBox(height: 24),
                 const Text(
-                  'Demo accounts (password: admin123)',
+                  'Demo accounts (one-click sign in)',
                   style: TextStyle(fontSize: 12, color: Colors.grey),
                 ),
                 const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 6,
-                  children: const [
-                    _Chip('Super Admin', 'super@buildakar.com'),
-                    _Chip('Healthcare Admin', 'hcadmin@buildakar.com'),
-                    _Chip('Resort Admin', 'rsadmin@buildakar.com'),
-                    _Chip('HR Manager', 'hr@buildakar.com'),
-                    _Chip('Driver', 'driver@buildakar.com'),
-                    _Chip('Employee', 'emp@buildakar.com'),
-                    _Chip('Inventory', 'inv@buildakar.com'),
-                  ],
+                Consumer<AppState>(
+                  builder: (_, auth, child) => Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    children: [
+                      _Chip('Super Admin', 'super@buildakar.com'),
+                      _Chip('Resort Inventory', 'invrs@buildakar.com'),
+                      _Chip('Pharmacy Inventory', 'inv@buildakar.com'),
+                      _Chip('HR Manager', 'hr@buildakar.com'),
+                      _Chip('Finance Manager', 'finance@buildakar.com'),
+                      _Chip('Staff', 'staff@buildakar.com'),
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 24),
                 TextButton.icon(
@@ -207,12 +221,14 @@ class _Chip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
     return FilterChip(
       label: Text(label, style: const TextStyle(fontSize: 11)),
-      onSelected: (_) {
-        final st = context.findAncestorStateOfType<_LoginScreenState>();
-        st?._fill(email);
-      },
+      onSelected: state.loading
+          ? null
+          : (_) => context
+              .findAncestorStateOfType<_LoginScreenState>()
+              ?._demoLogin(email),
     );
   }
 }

@@ -153,6 +153,14 @@ class User(AbstractUser):
         Role, on_delete=models.PROTECT, related_name="users", null=True, blank=True
     )
     is_approved = models.BooleanField(default=True)
+    is_demo = models.BooleanField(
+        default=False,
+        help_text=(
+            "True for seeded demo accounts. This is the only way an account can "
+            "use the gated /auth/demo-login/ endpoint; regular accounts are never "
+            "flagged and their passwords are never affected by seeding."
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     USERNAME_FIELD = "email"

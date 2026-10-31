@@ -131,6 +131,41 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// One-click sign-in for seeded demo accounts (server-gated by the
+  /// DEMO_LOGIN flag and the per-account is_demo marker). Never sends a
+  /// password; regular accounts are unaffected.
+  Future<void> demoLogin(String email) async {
+    await ready;
+    if (_loading) return;
+    _loading = true;
+    _error = null;
+    notifyListeners();
+    try {
+      final res = await ApiClient.instance.post(
+        '/auth/demo-login/',
+        body: {'email': email},
+      );
+      if (res.statusCode == 200) {
+        final data = ApiClient.decodeBody(res) as Map<String, dynamic>;
+        await setAuthenticated(
+          access: data['access'],
+          refresh: data['refresh'],
+          user: data['user'],
+        );
+      } else {
+        final data = ApiClient.decodeBody(res);
+        _error = (data is Map && data['detail'] != null)
+            ? data['detail'].toString()
+            : 'Demo sign-in failed (${res.statusCode})';
+      }
+    } catch (e) {
+      _error = 'Network error: $e';
+    } finally {
+      _loading = false;
+      notifyListeners();
+    }
+  }
+
   Future<void> logout() async {
     try {
       final refresh = _refreshToken;
