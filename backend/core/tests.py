@@ -71,12 +71,12 @@ class AuthenticationTests(TestCase):
         self.assertEqual(response.status_code, 200)
 
     @override_settings(CORS_ALLOW_ALL_ORIGINS=False, CORS_ALLOWED_ORIGINS=[
-        "http://localhost:3000", "https://homs-test.vercel.app"])
+        "http://localhost:3000", "https://frontend-lake-three-pu8rw4cxw9.vercel.app"])
     def test_deployment_origin_matrix(self):
-        # Reserved test hostnames; no live infrastructure is contacted.
+        # Configured frontend origin; no live infrastructure is contacted.
         for origin, host in [("http://localhost:3000", "localhost"),
                              ("http://localhost:3000", "testserver"),
-                             ("https://homs-test.vercel.app", "testserver")]:
+                             ("https://frontend-lake-three-pu8rw4cxw9.vercel.app", "testserver")]:
             with self.subTest(origin=origin, host=host):
                 response = self.client.options("/api/v1/auth/login/", HTTP_ORIGIN=origin,
                     HTTP_HOST=host, HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST",

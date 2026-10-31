@@ -1,5 +1,10 @@
 # Authentication deployment and verification
 
+Deployment update: the exact Vercel origin is now supplied and configured in
+render.yaml. Follow [RENDER_SETUP.md](RENDER_SETUP.md) for the current Docker
+layout and hosting settings; it supersedes the missing-frontend-domain notes below.
+The confirmed public Render backend URL is https://demo-jpuo.onrender.com.
+
 HOMS continues to use core.User (email/password), the existing role/division
 matrix, and SimpleJWT bearer tokens. No external identity provider or new user
 store was introduced. Pharmacy Inventory Manager is the existing

@@ -45,6 +45,10 @@ ALLOWED_HOSTS = env_list(
     "DJANGO_ALLOWED_HOSTS",
     "localhost,127.0.0.1,0.0.0.0,testserver" if DEBUG else "",
 )
+# Render supplies the public hostname; custom domains remain environment-driven.
+render_hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME", "").strip()
+if render_hostname and render_hostname not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(render_hostname)
 if not DEBUG and not ALLOWED_HOSTS:
     raise ImproperlyConfigured(
         "DJANGO_ALLOWED_HOSTS must list the public host names in production."
@@ -123,6 +127,8 @@ ASGI_APPLICATION = "uems_config.asgi.application"
 # ---------------------------------------------------------------------------
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+if os.getenv("RENDER") == "true" and not DEBUG and not DATABASE_URL:
+    raise ImproperlyConfigured("DATABASE_URL must point to the existing persistent database on Render.")
 
 
 def _database_from_url(url):
