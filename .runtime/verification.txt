@@ -1,0 +1,5 @@
+=== UDP 45873 is NOT listening ===
+---
+PID 13808 (discovery.pid):  alive= False
+PID 9300 (supervisor): python alive= True
+PID 11076 (mystery python): python alive= True

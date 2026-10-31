@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "C:\Users\Kazuboiii\Desktop\HOMS\scripts\lan_discovery.py", line 150, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\Kazuboiii\Desktop\HOMS\scripts\lan_discovery.py", line 128, in main
+    listener.bind(("0.0.0.0", PORT))
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+OSError: [WinError 10048] Only one usage of each socket address (protocol/network address/port) is normally permitted

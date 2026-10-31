@@ -1,0 +1,59 @@
+services:
+  - type: web
+    name: homs-backend
+    env: python
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+      python manage.py collectstatic --noinput
+    startCommand: gunicorn uems_config.wsgi:application --bind 0.0.0.0:${PORT} --workers 3 --timeout 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DJANGO_SECRET_KEY
+        sync: false
+      - key: DJANGO_ALLOWED_HOSTS
+        sync: false
+      - key: DJANGO_CSRF_TRUSTED_ORIGINS
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: CORS_ALLOW_ALL_ORIGINS
+        value: "false"
+      - key: CORS_ALLOW_CREDENTIALS
+        value: "true"
+      - key: FRONTEND_BASE_URL
+        sync: false
+      - key: PUBLIC_API_BASE_URL
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: homs-db
+          property: connectionString
+      - key: DB_CONN_MAX_AGE
+        value: "60"
+      - key: DJANGO_LOG_LEVEL
+        value: INFO
+      - key: GUNICORN_WORKERS
+        value: "3"
+      - key: GUNICORN_TIMEOUT
+        value: "120"
+      - key: RUN_MIGRATIONS
+        value: "1"
+    disk:
+      name: media
+      mountPath: /app/media
+      sizeMiB: 512
+    healthCheckPath: /api/v1/health/
+    healthCheckTimeout: 10
+    healthCheckInterval: 10
+    healthCheckTimeoutInit: 10
+    autoDeploy: true
+
+databases:
+  - name: homs-db
+    databaseName: homs
+    user: homs
+    plan: free

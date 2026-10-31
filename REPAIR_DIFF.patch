@@ -1,0 +1,2942 @@
+--- mobile\uems_mobile\lib\main.dart
++++ mobile\uems_mobile\lib\main.dart
+@@ -12,7 +12,9 @@
+ void main() async {
+   WidgetsFlutterBinding.ensureInitialized();
+   await Storage.prefs;
+-  runApp(ChangeNotifierProvider(create: (_) => AppState(), child: const UemsApp()));
++  runApp(
++    ChangeNotifierProvider(create: (_) => AppState(), child: const UemsApp()),
++  );
+ }
+ 
+ class UemsApp extends StatelessWidget {
+@@ -21,20 +23,30 @@
+   @override
+   Widget build(BuildContext context) {
+     return Consumer<AppState>(
+-      builder: (_, auth, __) {
++      builder: (_, auth, child) {
+         return MaterialApp(
++          key: ValueKey(auth.isAuthenticated),
+           title: 'UEMS',
+           debugShowCheckedModeBanner: false,
+-          theme: ThemeData(useMaterial3: true, colorScheme: const ColorScheme.light(
+-            primary: Color(0xFF0F172A),
+-            secondary: Color(0xFF0D9488),
+-          )),
++          theme: ThemeData(
++            useMaterial3: true,
++            colorScheme: const ColorScheme.light(
++              primary: Color(0xFF0F172A),
++              secondary: Color(0xFF0D9488),
++            ),
++          ),
+           home: auth.isAuthenticated ? const HomeScreen() : const LoginScreen(),
+           routes: {
+-            '/login': (_) => const LoginScreen(),
+-            '/home': (_) => const HomeScreen(),
+-            '/scanner': (_) => const QrScannerScreen(),
+-            '/inventory': (_) => const InventoryScreen(),
++            '/login': (_) =>
++                auth.isAuthenticated ? const HomeScreen() : const LoginScreen(),
++            '/home': (_) =>
++                auth.isAuthenticated ? const HomeScreen() : const LoginScreen(),
++            '/scanner': (_) => auth.isAuthenticated
++                ? const QrScannerScreen()
++                : const LoginScreen(),
++            '/inventory': (_) => auth.isAuthenticated
++                ? const InventoryScreen()
++                : const LoginScreen(),
+             '/settings': (_) => const SettingsScreen(),
+           },
+         );
+--- mobile\uems_mobile\test\widget_test.dart
++++ mobile\uems_mobile\test\widget_test.dart
+@@ -1,14 +1,26 @@
+ // Basic smoke test for the UEMS mobile app.
+ import 'package:flutter/material.dart';
+ import 'package:flutter_test/flutter_test.dart';
++import 'package:flutter_secure_storage/flutter_secure_storage.dart';
++import 'package:shared_preferences/shared_preferences.dart';
++import 'package:provider/provider.dart';
++import 'package:uems_mobile/core/app_state.dart';
+ 
+ import 'package:uems_mobile/main.dart';
+ 
+ void main() {
+   testWidgets('UemsApp builds', (WidgetTester tester) async {
++    FlutterSecureStorage.setMockInitialValues({});
++    SharedPreferences.setMockInitialValues({});
++    final state = AppState();
++    await state.ready;
+     await tester.pumpWidget(
+-      const MaterialApp(home: Scaffold(body: Text('UEMS'))),
++      ChangeNotifierProvider.value(value: state, child: const UemsApp()),
+     );
+-    expect(find.text('UEMS'), findsOneWidget);
++    await tester.pumpAndSettle();
++    expect(find.text('Sign in'), findsOneWidget);
++    expect(tester.takeException(), isNull);
++    await tester.pumpWidget(const SizedBox());
++    state.dispose();
+   });
+ }
+--- mobile\uems_mobile\lib\core\api_client.dart
++++ mobile\uems_mobile\lib\core\api_client.dart
+@@ -1,5 +1,4 @@
+ import 'dart:convert';
+-import 'package:flutter/foundation.dart';
+ import 'package:http/http.dart' as http;
+ 
+ import '../core/storage.dart';
+@@ -9,10 +8,34 @@
+ /// Automatically attaches the Bearer access token from secure storage and
+ /// notifies the app state on 401 (unauthorized) so the user can re-login.
+ class ApiClient {
+-  ApiClient._();
+-  static final ApiClient instance = ApiClient._();
++  ApiClient({http.Client? client}) : _client = client ?? http.Client();
++  static final ApiClient instance = ApiClient();
+ 
+-  final http.Client _client = http.Client();
++  final http.Client _client;
++  Future<void> Function()? onUnauthorized;
++
++  static String normalizeBase(String value) {
++    final base = value.trim().replaceAll(RegExp(r'/+$'), '');
++    final uri = Uri.tryParse(base);
++    if (uri == null ||
++        !['http', 'https'].contains(uri.scheme) ||
++        uri.host.isEmpty ||
++        uri.hasQuery ||
++        uri.hasFragment ||
++        uri.userInfo.isNotEmpty) {
++      throw const FormatException('Enter an HTTP or HTTPS server URL.');
++    }
++    return base.endsWith('/api/v1') ? base : '$base/api/v1';
++  }
++
++  Future<http.Response> _check(http.Response response, String path) async {
++    if (response.statusCode == 401 &&
++        path != '/auth/login/' &&
++        path != '/auth/logout/') {
++      await onUnauthorized?.call();
++    }
++    return response;
++  }
+ 
+   /// Base path including "/api/v1". The host+port comes from storage.
+   /// Auto-detects the backend IP if no manual URL is configured.
+@@ -22,7 +45,7 @@
+ 
+     // If user has manually configured a URL, use it
+     if (host != null && host.isNotEmpty) {
+-      return host.replaceAll(RegExp(r'/+$'), '') + '/api/v1';
++      return normalizeBase(host);
+     }
+ 
+     // Auto-detect: try localhost (emulator) first, then common LAN IPs
+@@ -42,18 +65,27 @@
+     for (final base in candidates) {
+       try {
+         final uri = Uri.parse('$base/api/v1/auth/login/');
+-        final response = await _client.post(uri, body: jsonEncode({})).timeout(const Duration(seconds: 2));
+-        if (response.statusCode == 401 || response.statusCode == 200 || response.statusCode == 405) {
++        final response = await _client
++            .post(
++              uri,
++              headers: {'Content-Type': 'application/json'},
++              body: jsonEncode({}),
++            )
++            .timeout(const Duration(seconds: 2));
++        if (response.statusCode == 401 ||
++            response.statusCode == 200 ||
++            response.statusCode == 405) {
+           // Server responded, so it's reachable
+-          return base.replaceAll(RegExp(r'/+$'), '') + '/api/v1';
++          return normalizeBase(base);
+         }
+       } catch (_) {
+         // Try next candidate
+       }
+     }
+ 
+-    // Fallback to emulator default
+-    return 'http://10.0.2.2:8000/api/v1';
++    throw const FormatException(
++      'Server not found. Set the backend URL in Settings; a physical phone needs the server LAN address.',
++    );
+   }
+ 
+   Future<Map<String, String>> _headers() async {
+@@ -69,21 +101,45 @@
+   }
+ 
+   Future<http.Response> get(String path, {Map<String, String>? query}) async {
+-    final uri = Uri.parse('${await _base}$path').replace(queryParameters: query);
+-    return _client.get(uri, headers: await _headers());
++    final uri = Uri.parse(
++      '${await _base}$path',
++    ).replace(queryParameters: query);
++    return _check(
++      await _client
++          .get(uri, headers: await _headers())
++          .timeout(const Duration(seconds: 20)),
++      path,
++    );
+   }
+ 
+-  Future<http.Response> post(String path,
+-      {Map<String, dynamic>? body, Map<String, String>? query}) async {
+-    final uri = Uri.parse('${await _base}$path').replace(queryParameters: query);
+-    return _client.post(uri,
+-        headers: await _headers(), body: body == null ? null : jsonEncode(body));
++  Future<http.Response> post(
++    String path, {
++    Map<String, dynamic>? body,
++    Map<String, String>? query,
++  }) async {
++    final uri = Uri.parse(
++      '${await _base}$path',
++    ).replace(queryParameters: query);
++    return _check(
++      await _client
++          .post(
++            uri,
++            headers: await _headers(),
++            body: body == null ? null : jsonEncode(body),
++          )
++          .timeout(const Duration(seconds: 20)),
++      path,
++    );
+   }
+ 
+   /// Convenience: decode JSON response body, or return null on empty/error.
+   static dynamic decodeBody(http.Response res) {
+     if (res.body.isEmpty) return null;
+-    return jsonDecode(res.body);
++    try {
++      return jsonDecode(res.body);
++    } on FormatException {
++      return null;
++    }
+   }
+ 
+   void dispose() {
+--- mobile\uems_mobile\lib\core\app_state.dart
++++ mobile\uems_mobile\lib\core\app_state.dart
+@@ -6,7 +6,32 @@
+ /// Holds authentication + app configuration state.
+ class AppState extends ChangeNotifier {
+   AppState() {
+-    _load();
++    ApiClient.instance.onUnauthorized = expireSession;
++    ready = _load();
++  }
++
++  late final Future<void> ready;
++  bool _disposed = false;
++
++  @override
++  void notifyListeners() {
++    if (!_disposed) super.notifyListeners();
++  }
++
++  @override
++  void dispose() {
++    _disposed = true;
++    ApiClient.instance.onUnauthorized = null;
++    super.dispose();
++  }
++
++  Future<void> expireSession() async {
++    _accessToken = null;
++    _refreshToken = null;
++    _user = null;
++    _error = 'Session expired. Please sign in again.';
++    await Storage.clearTokens();
++    notifyListeners();
+   }
+ 
+   Future<void> _load() async {
+@@ -38,14 +63,21 @@
+   }
+ 
+   Future<void> setApiBaseUrl(String url) async {
+-    _apiBaseUrl = url;
+-    await Storage.setApiBaseUrl(url);
++    final normalized = url.trim().isEmpty ? '' : ApiClient.normalizeBase(url);
++    await Storage.setApiBaseUrl(normalized);
++    _apiBaseUrl = normalized;
+     notifyListeners();
+   }
+ 
+   Future<void> detectAndSetApiBase() async {
+-    final detected = await ApiClient.instance.detectApiBase();
+-    setApiBaseUrl(detected);
++    try {
++      final detected = await ApiClient.instance.detectApiBase();
++      await setApiBaseUrl(detected);
++      _error = null;
++    } catch (_) {
++      _error = 'Server not found. Set its LAN address in Settings.';
++    }
++    notifyListeners();
+   }
+ 
+   /// Call after a successful login to store tokens + user.
+@@ -64,12 +96,16 @@
+   }
+ 
+   Future<void> login(String email, String password) async {
++    await ready;
++    if (_loading) return;
+     _loading = true;
+     _error = null;
+     notifyListeners();
+     try {
+-      final res = await ApiClient.instance.post('/auth/login/',
+-          body: {'email': email, 'password': password});
++      final res = await ApiClient.instance.post(
++        '/auth/login/',
++        body: {'email': email, 'password': password},
++      );
+       if (res.statusCode == 200) {
+         final data = ApiClient.decodeBody(res) as Map<String, dynamic>;
+         await setAuthenticated(
+@@ -95,7 +131,10 @@
+     try {
+       final refresh = _refreshToken;
+       if (refresh != null) {
+-        await ApiClient.instance.post('/auth/logout/', body: {'refresh': refresh});
++        await ApiClient.instance.post(
++          '/auth/logout/',
++          body: {'refresh': refresh},
++        );
+       }
+     } catch (_) {}
+     _accessToken = null;
+--- mobile\uems_mobile\lib\screens\home_screen.dart
++++ mobile\uems_mobile\lib\screens\home_screen.dart
+@@ -3,9 +3,6 @@
+ import 'package:provider/provider.dart';
+ import '../core/app_state.dart';
+ import '../core/api_client.dart';
+-import 'qr_scanner_screen.dart';
+-import 'inventory_screen.dart';
+-import 'settings_screen.dart';
+ 
+ class HomeScreen extends StatefulWidget {
+   const HomeScreen({super.key});
+@@ -26,18 +23,48 @@
+   }
+ 
+   Future<void> _load() async {
++    if (!mounted) return;
+     setState(() => _loading = true);
+     final state = context.read<AppState>();
+-    await state.fetchMe();
+-    _user = state.user;
+-    final res = await ApiClient.instance.get('/attendance/events/mine/');
+-    if (res.statusCode == 200) {
+-      final data = ApiClient.decodeBody(res);
+-      final list = (data is Map && data['results'] is List)
+-          ? data['results'] as List
+-          : <dynamic>[];
+-      _events = list.map((e) => Map<String, dynamic>.from(e as Map)).toList()
+-        ..sort((a, b) => b['timestamp'].toString().compareTo(a['timestamp'].toString()));
++    try {
++      await state.fetchMe();
++      _user = state.user;
++      final events = <Map<String, dynamic>>[];
++      for (var page = 1; ; page++) {
++        if (!mounted || !state.isAuthenticated) return;
++        final res = await ApiClient.instance.get(
++          '/attendance/events/mine/',
++          query: {'page': '$page'},
++        );
++        if (res.statusCode != 200) {
++          throw StateError('Attendance request failed');
++        }
++        final data = ApiClient.decodeBody(res);
++        final list = data is List
++            ? data
++            : data is Map
++            ? data['results']
++            : null;
++        if (list is! List) {
++          throw const FormatException('Invalid attendance response');
++        }
++        events.addAll(list.map((e) => Map<String, dynamic>.from(e as Map)));
++        if (data is! Map || data['next'] == null) break;
++      }
++      _events = events
++        ..sort(
++          (a, b) => DateTime.parse(
++            b['timestamp'],
++          ).compareTo(DateTime.parse(a['timestamp'])),
++        );
++    } catch (_) {
++      if (mounted) {
++        ScaffoldMessenger.of(context).showSnackBar(
++          const SnackBar(
++            content: Text('Could not load attendance. Check your connection.'),
++          ),
++        );
++      }
+     }
+     if (mounted) setState(() => _loading = false);
+   }
+@@ -50,27 +77,15 @@
+   bool get _checkedIn => _lastAction == 'check_in';
+ 
+   String _todayHours() {
+-    final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
+-    final todayEvents = _events.where((e) {
+-      final t = e['timestamp'] as String?;
+-      return t != null && t.startsWith(today);
+-    }).toList();
+-    if (todayEvents.isEmpty) return '0:00';
+-    final first = todayEvents.last;
+-    final last = todayEvents.first;
+-    try {
+-      final fi = DateTime.parse(first['timestamp']);
+-      final la = DateTime.parse(last['timestamp']);
+-      final diff = la.difference(fi);
+-      return '${diff.inHours}:${(diff.inMinutes % 60).toString().padLeft(2, '0')}';
+-    } catch (_) {
+-      return '0:00';
+-    }
++    final minutes = attendanceMinutesToday(_events, DateTime.now());
++    return '${minutes ~/ 60}:${(minutes % 60).toString().padLeft(2, '0')}';
+   }
+ 
+   @override
+   Widget build(BuildContext context) {
+-    if (_loading) return const Scaffold(body: Center(child: CircularProgressIndicator()));
++    if (_loading) {
++      return const Scaffold(body: Center(child: CircularProgressIndicator()));
++    }
+     final state = context.watch<AppState>();
+     return Scaffold(
+       appBar: AppBar(
+@@ -81,7 +96,9 @@
+             icon: const Icon(Icons.logout, color: Colors.red),
+             onPressed: () async {
+               await state.logout();
+-              if (mounted) Navigator.pushNamedAndRemoveUntil(context, '/login', (_) => false);
++              if (context.mounted) {
++                Navigator.popUntil(context, (route) => route.isFirst);
++              }
+             },
+           ),
+         ],
+@@ -94,16 +111,33 @@
+             children: [
+               CircleAvatar(
+                 backgroundColor: const Color(0xFF0F172A),
+-                child: Text(_user?['first_name']?.substring(0, 1) ?? 'U', style: const TextStyle(color: Colors.white)),
++                child: Text(
++                  (_user?['first_name'] as String? ?? '').isEmpty
++                      ? 'U'
++                      : (_user!['first_name'] as String).substring(0, 1),
++                  style: const TextStyle(color: Colors.white),
++                ),
+               ),
+               const SizedBox(width: 12),
+               Expanded(
+                 child: Column(
+                   crossAxisAlignment: CrossAxisAlignment.start,
+                   children: [
+-                    Text(_user?['first_name'] ?? 'Employee', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
++                    Text(
++                      _user?['first_name'] ?? 'Employee',
++                      style: const TextStyle(
++                        fontSize: 18,
++                        fontWeight: FontWeight.bold,
++                      ),
++                    ),
+                     const SizedBox(height: 2),
+-                    Text('${_user?['role_name'] ?? 'Staff'}  •  ${_user?['business_unit_name'] ?? '—'}', style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
++                    Text(
++                      '${_user?['role_name'] ?? 'Staff'}  •  ${_user?['business_unit_name'] ?? '—'}',
++                      style: const TextStyle(
++                        fontSize: 12,
++                        color: Color(0xFF64748B),
++                      ),
++                    ),
+                   ],
+                 ),
+               ),
+@@ -120,17 +154,41 @@
+                     children: [
+                       Container(
+                         padding: const EdgeInsets.all(8),
+-                        decoration: BoxDecoration(color: (_checkedIn ? const Color(0xFF0D9488) : const Color(0xFF64748B)).withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
+-                        child: Icon(_checkedIn ? Icons.login : Icons.logout, color: _checkedIn ? const Color(0xFF0D9488) : const Color(0xFF64748B)),
++                        decoration: BoxDecoration(
++                          color:
++                              (_checkedIn
++                                      ? const Color(0xFF0D9488)
++                                      : const Color(0xFF64748B))
++                                  .withValues(alpha: 0.1),
++                          borderRadius: BorderRadius.circular(8),
++                        ),
++                        child: Icon(
++                          _checkedIn ? Icons.login : Icons.logout,
++                          color: _checkedIn
++                              ? const Color(0xFF0D9488)
++                              : const Color(0xFF64748B),
++                        ),
+                       ),
+                       const SizedBox(width: 12),
+                       Expanded(
+                         child: Column(
+                           crossAxisAlignment: CrossAxisAlignment.start,
+                           children: [
+-                            Text(_checkedIn ? 'Checked In' : 'Checked Out', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
++                            Text(
++                              _checkedIn ? 'Checked In' : 'Checked Out',
++                              style: const TextStyle(
++                                fontSize: 16,
++                                fontWeight: FontWeight.w600,
++                              ),
++                            ),
+                             const SizedBox(height: 2),
+-                            Text('Last event: ${_events.isNotEmpty ? DateFormat('HH:mm').format(DateTime.parse(_events.first['timestamp'] as String).toLocal()) : '—'}', style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
++                            Text(
++                              'Last event: ${_events.isNotEmpty ? DateFormat('HH:mm').format(DateTime.parse(_events.first['timestamp'] as String).toLocal()) : '—'}',
++                              style: const TextStyle(
++                                fontSize: 12,
++                                color: Color(0xFF64748B),
++                              ),
++                            ),
+                           ],
+                         ),
+                       ),
+@@ -139,8 +197,20 @@
+                   const SizedBox(height: 16),
+                   Row(
+                     children: [
+-                      Expanded(child: _stat('Hours Today', _todayHours(), Icons.access_time)),
+-                      Expanded(child: _stat('Events', '${_events.length}', Icons.event_note)),
++                      Expanded(
++                        child: _stat(
++                          'Hours Today',
++                          _todayHours(),
++                          Icons.access_time,
++                        ),
++                      ),
++                      Expanded(
++                        child: _stat(
++                          'Events',
++                          '${_events.length}',
++                          Icons.event_note,
++                        ),
++                      ),
+                     ],
+                   ),
+                 ],
+@@ -148,25 +218,46 @@
+             ),
+           ),
+           const SizedBox(height: 20),
+-          const Text('Recent Activity', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
++          const Text(
++            'Recent Activity',
++            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
++          ),
+           const SizedBox(height: 8),
+           if (_events.isEmpty)
+             const Center(child: Text('No attendance records yet.'))
+           else
+-            ..._events.take(6).map((e) => Card(
+-              margin: const EdgeInsets.only(bottom: 8),
+-              child: ListTile(
+-                leading: Icon(e['action'] == 'check_in' ? Icons.login : Icons.logout, color: e['action'] == 'check_in' ? const Color(0xFF0D9488) : const Color(0xFF64748B)),
+-                title: Text(e['action'] == 'check_in' ? 'Check In' : 'Check Out'),
+-                subtitle: Text(DateFormat('MMM dd, HH:mm').format(DateTime.parse(e['timestamp'] as String).toLocal())),
+-              ),
+-            )),
++            ..._events
++                .take(6)
++                .map(
++                  (e) => Card(
++                    margin: const EdgeInsets.only(bottom: 8),
++                    child: ListTile(
++                      leading: Icon(
++                        e['action'] == 'check_in' ? Icons.login : Icons.logout,
++                        color: e['action'] == 'check_in'
++                            ? const Color(0xFF0D9488)
++                            : const Color(0xFF64748B),
++                      ),
++                      title: Text(
++                        e['action'] == 'check_in' ? 'Check In' : 'Check Out',
++                      ),
++                      subtitle: Text(
++                        DateFormat('MMM dd, HH:mm').format(
++                          DateTime.parse(e['timestamp'] as String).toLocal(),
++                        ),
++                      ),
++                    ),
++                  ),
++                ),
+           const SizedBox(height: 20),
+           SizedBox(
+             width: double.infinity,
+             height: 50,
+             child: ElevatedButton.icon(
+-              onPressed: () => Navigator.pushNamed(context, '/scanner'),
++              onPressed: () async {
++                await Navigator.pushNamed(context, '/scanner');
++                if (mounted) await _load();
++              },
+               icon: const Icon(Icons.qr_code_scanner),
+               label: const Text('Scan Attendance QR'),
+               style: ElevatedButton.styleFrom(
+@@ -185,10 +276,44 @@
+       children: [
+         Icon(icon, size: 20, color: const Color(0xFF0D9488)),
+         const SizedBox(height: 6),
+-        Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
++        Text(
++          value,
++          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
++        ),
+         const SizedBox(height: 4),
+-        Text(label, style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
++        Text(
++          label,
++          style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
++        ),
+       ],
+     );
+   }
+ }
++
++/// Sum actual check-in intervals, clipping overnight shifts to the local day.
++int attendanceMinutesToday(List<Map<String, dynamic>> events, DateTime now) {
++  final startOfDay = DateTime(now.year, now.month, now.day);
++  final ordered =
++      events
++          .map(
++            (event) => (
++              time: DateTime.parse(event['timestamp'] as String).toLocal(),
++              action: event['action'],
++            ),
++          )
++          .toList()
++        ..sort((a, b) => a.time.compareTo(b.time));
++  DateTime? checkIn;
++  var worked = Duration.zero;
++  for (final event in ordered) {
++    if (event.time.isAfter(now)) break;
++    if (event.action == 'check_in') {
++      checkIn ??= event.time.isBefore(startOfDay) ? startOfDay : event.time;
++    } else if (event.action == 'check_out' && checkIn != null) {
++      if (event.time.isAfter(checkIn)) worked += event.time.difference(checkIn);
++      checkIn = null;
++    }
++  }
++  if (checkIn != null) worked += now.difference(checkIn);
++  return worked.inMinutes;
++}
+--- mobile\uems_mobile\lib\screens\inventory_screen.dart
++++ mobile\uems_mobile\lib\screens\inventory_screen.dart
+@@ -1,6 +1,5 @@
+ import 'dart:async';
+ import 'package:flutter/material.dart';
+-import 'package:mobile_scanner/mobile_scanner.dart';
+ import 'package:provider/provider.dart';
+ import '../core/app_state.dart';
+ import '../core/api_client.dart';
+@@ -16,6 +15,9 @@
+   int _tab = 0;
+   List<Map<String, dynamic>> _products = [];
+   Map<String, dynamic>? _product;
++  List<Map<String, dynamic>> _locations = [], _departments = [], _batches = [];
++  int? _locationId, _departmentId, _batchId;
++  final _expiryCtrl = TextEditingController();
+   String? _msg;
+   bool _isError = false;
+   bool _loading = false;
+@@ -29,67 +31,218 @@
+     _loadProducts();
+   }
+ 
++  void _message(String message, {bool error = true}) {
++    if (mounted) {
++      setState(() {
++        _msg = message;
++        _isError = error;
++      });
++    }
++  }
++
++  Future<List<Map<String, dynamic>>> _list(String path) async {
++    final items = <Map<String, dynamic>>[];
++    for (var page = 1; ; page++) {
++      final res = await ApiClient.instance.get(path, query: {'page': '$page'});
++      if (res.statusCode != 200) {
++        throw StateError('Request failed (${res.statusCode})');
++      }
++      final data = ApiClient.decodeBody(res);
++      final rows = data is List
++          ? data
++          : data is Map
++          ? data['results']
++          : null;
++      if (rows is! List) throw const FormatException('Invalid list response');
++      items.addAll(rows.map((row) => Map<String, dynamic>.from(row as Map)));
++      if (data is! Map || data['next'] == null) return items;
++    }
++  }
++
+   Future<void> _loadProducts() async {
+-    final bu = Provider.of<AppState>(context, listen: false).user?['business_unit'];
+-    final res = await ApiClient.instance.get('/inventory/products/',
+-        query: bu != null ? {'business_unit': bu.toString()} : null);
+-    if (res.statusCode == 200 && mounted) {
++    try {
++      final lists = await Future.wait([
++        _list('/inventory/products/'),
++        _list('/inventory/locations/'),
++        _list('/departments/'),
++        _list('/inventory/batches/'),
++      ]);
++      if (!mounted) return;
++      final bu = context.read<AppState>().user?['business_unit'];
++      setState(() {
++        _products = lists[0]
++            .where(
++              (p) =>
++                  p['is_active'] == true &&
++                  (bu == null || p['business_unit'] == bu),
++            )
++            .toList();
++        _locations = lists[1].where((p) => p['is_active'] == true).toList();
++        _departments = lists[2].where((p) => p['is_active'] == true).toList();
++        _batches = lists[3];
++        final selected = _products.where((p) => p['id'] == _product?['id']);
++        _product = selected.isEmpty ? null : selected.first;
++        _batchId = null;
++      });
++    } catch (_) {
++      _message('Could not load inventory. Check your connection and sign-in.');
++    }
++  }
++
++  void _selectProduct(int? id) {
++    setState(() {
++      _product = id == null ? null : _products.firstWhere((p) => p['id'] == id);
++      _locationId = null;
++      _departmentId = null;
++      _batchId = null;
++    });
++  }
++
++  Future<void> _lookup(String barcode) async {
++    if (barcode.trim().isEmpty || _loading) return;
++    setState(() => _loading = true);
++    try {
++      final bu = context.read<AppState>().user?['business_unit'];
++      final res = await ApiClient.instance.get(
++        '/inventory/products/lookup/',
++        query: {
++          'barcode': barcode.trim(),
++          if (bu != null) 'business_unit': '$bu',
++        },
++      );
+       final data = ApiClient.decodeBody(res);
+-      final list = (data is Map && data['results'] is List) ? data['results'] as List : <dynamic>[];
+-      setState(() => _products = list.cast<Map<String, dynamic>>());
+-    }
+-  }
+-
+-  Future<void> _lookup(String barcode) async {
+-    if (barcode.isEmpty) return;
+-    final bu = Provider.of<AppState>(context, listen: false).user?['business_unit'];
+-    final query = <String, String>{'barcode': barcode};
+-    if (bu != null) query['business_unit'] = bu.toString();
+-    final res = await ApiClient.instance.get('/inventory/products/lookup/', query: query);
+-    if (res.statusCode == 200 && mounted) {
+-      setState(() { _product = Map<String, dynamic>.from(ApiClient.decodeBody(res) as Map); _msg = null; });
+-    } else if (mounted) {
+-      setState(() { _msg = 'No product for barcode: $barcode'; _isError = true; });
++      if (res.statusCode != 200 || data is! Map) {
++        _message('Product lookup failed (${res.statusCode}).');
++        return;
++      }
++      if (!mounted) return;
++      final product = Map<String, dynamic>.from(data);
++      if (!_products.any((p) => p['id'] == product['id'])) {
++        _products.add(product);
++      }
++      _selectProduct(product['id'] as int);
++      setState(() => _msg = null);
++    } catch (_) {
++      _message('Could not look up the barcode.');
++    } finally {
++      if (mounted) setState(() => _loading = false);
+     }
+   }
+ 
+   Future<void> _receive() async {
+-    if (_product == null) return;
++    final qty = int.tryParse(_qtyCtrl.text) ?? 0;
++    if (_loading) return;
++    if (_product == null ||
++        _locationId == null ||
++        qty <= 0 ||
++        _batchCtrl.text.trim().isEmpty) {
++      _message(
++        'Select a product and location, and enter a batch number and positive quantity.',
++      );
++      return;
++    }
++    final expiry = _expiryCtrl.text.trim();
++    final date = DateTime.tryParse(expiry);
++    if ((expiry.isNotEmpty &&
++            (date == null ||
++                date.toIso8601String().split('T').first != expiry)) ||
++        (_product!['is_perishable'] == true && expiry.isEmpty)) {
++      _message(
++        'Enter a valid expiry date (YYYY-MM-DD). Perishable products require one.',
++      );
++      return;
++    }
++    await _submit('/inventory/receipts/', {
++      'reference': 'RCPT-${DateTime.now().microsecondsSinceEpoch}',
++      'business_unit': _product!['business_unit'],
++      'location': _locationId,
++      'lines': [
++        {
++          'product': _product!['id'],
++          'batch_number': _batchCtrl.text.trim(),
++          'expiry_date': expiry.isEmpty ? null : expiry,
++          'quantity': qty,
++          'unit_cost': '0.00',
++        },
++      ],
++    }, 'Stock received successfully.');
++  }
++
++  Future<void> _issue() async {
++    if (_loading) return;
++    final qty = int.tryParse(_qtyCtrl.text) ?? 0;
++    if (_product == null ||
++        _batchId == null ||
++        _departmentId == null ||
++        qty <= 0) {
++      _message(
++        'Select a product, usable batch and department, and enter a positive quantity.',
++      );
++      return;
++    }
++    await _submit('/inventory/issues/', {
++      'reference': 'ISSUE-${DateTime.now().microsecondsSinceEpoch}',
++      'business_unit': _product!['business_unit'],
++      'department': _departmentId,
++      'lines': [
++        {'product_batch': _batchId, 'quantity': qty},
++      ],
++    }, 'Stock issued successfully.');
++  }
++
++  Future<void> _submit(
++    String path,
++    Map<String, dynamic> body,
++    String success,
++  ) async {
+     setState(() => _loading = true);
+-    final qty = int.tryParse(_qtyCtrl.text) ?? 0;
+-    final receipt = {
+-      'reference': 'RCPT-${DateTime.now().millisecondsSinceEpoch}',
+-      'business_unit': _product!['business_unit'],
+-      'location': 1,
+-      'lines': [{'product': _product!['id'], 'batch_number': _batchCtrl.text.isEmpty ? 'BATCH-${DateTime.now().millisecondsSinceEpoch}' : _batchCtrl.text, 'expiry_date': DateTime.now().add(const Duration(days: 365)).toIso8601String().split('T').first, 'quantity': qty, 'unit_cost': '0.00'}],
+-    };
+-    final res = await ApiClient.instance.post('/inventory/receipts/', body: receipt);
+-    setState(() => _loading = false);
+-    if (res.statusCode == 201 && mounted) {
+-      setState(() { _msg = 'Stock received successfully.'; _isError = false; _batchCtrl.clear(); _qtyCtrl.text = '1'; });
+-      _loadProducts();
+-    } else if (mounted) {
+-      setState(() { _msg = 'Receipt failed'; _isError = true; });
+-    }
+-  }
+-
+-  Future<void> _issue() async {
+-    if (_product == null) return;
+-    setState(() => _loading = true);
+-    final qty = int.tryParse(_qtyCtrl.text) ?? 0;
+-    final res = await ApiClient.instance.post('/inventory/issues/', body: {
+-      'reference': 'ISSUE-${DateTime.now().millisecondsSinceEpoch}',
+-      'business_unit': _product!['business_unit'],
+-      'department': 1,
+-      'lines': [{'product_batch': _product!['id'], 'quantity': qty}],
+-    });
+-    setState(() => _loading = false);
+-    if (res.statusCode == 201 && mounted) {
+-      setState(() { _msg = 'Stock issued successfully.'; _isError = false; _qtyCtrl.text = '1'; });
+-      _loadProducts();
+-    } else if (mounted) {
+-      setState(() { _msg = 'Issue failed'; _isError = true; });
+-    }
++    try {
++      final res = await ApiClient.instance.post(path, body: body);
++      if (!mounted) return;
++      if (res.statusCode == 201) {
++        _message(success, error: false);
++        _qtyCtrl.text = '1';
++        await _loadProducts();
++      } else {
++        final data = ApiClient.decodeBody(res);
++        _message(
++          'Request rejected (${res.statusCode}): ${data ?? 'Invalid server response'}',
++        );
++      }
++    } catch (_) {
++      _message(
++        'Could not confirm the stock change. Check stock history before retrying.',
++      );
++    } finally {
++      if (mounted) setState(() => _loading = false);
++    }
++  }
++
++  Widget _choice(
++    String label,
++    List<Map<String, dynamic>> items,
++    int? selected,
++    ValueChanged<int?> change, {
++    String name = 'name',
++  }) {
++    return DropdownButtonFormField<int>(
++      key: ValueKey('$label:$selected:${_product?['id']}'),
++      initialValue: items.any((p) => p['id'] == selected) ? selected : null,
++      isExpanded: true,
++      decoration: InputDecoration(
++        labelText: label,
++        border: const OutlineInputBorder(),
++      ),
++      items: items
++          .map(
++            (p) => DropdownMenuItem(
++              value: p['id'] as int,
++              child: Text('${p[name]}', overflow: TextOverflow.ellipsis),
++            ),
++          )
++          .toList(),
++      onChanged: _loading ? null : change,
++    );
+   }
+ 
+   @override
+@@ -102,10 +255,13 @@
+       ),
+       bottomNavigationBar: BottomNavigationBar(
+         currentIndex: _tab,
+-        onTap: (i) => setState(() => _tab = i),
++        onTap: _loading ? null : (i) => setState(() => _tab = i),
+         items: const [
+           BottomNavigationBarItem(icon: Icon(Icons.list), label: 'Products'),
+-          BottomNavigationBarItem(icon: Icon(Icons.inventory_2), label: 'Receive'),
++          BottomNavigationBarItem(
++            icon: Icon(Icons.inventory_2),
++            label: 'Receive',
++          ),
+           BottomNavigationBarItem(icon: Icon(Icons.output), label: 'Issue'),
+         ],
+       ),
+@@ -119,8 +275,20 @@
+         margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+         child: ListTile(
+           title: Text(_products[i]['name'] as String? ?? 'Product'),
+-          subtitle: Text('SKU: ${_products[i]['sku']}  •  Usable: ${_products[i]['usable_stock']} ${_products[i]['unit']}'),
+-          trailing: Text((_products[i]['is_low_stock'] as bool? ?? false) ? 'LOW STOCK' : 'OK', style: TextStyle(color: (_products[i]['is_low_stock'] as bool? ?? false) ? Colors.red : const Color(0xFF0D9488), fontWeight: FontWeight.bold)),
++          subtitle: Text(
++            'SKU: ${_products[i]['sku']}  •  Usable: ${_products[i]['usable_stock']} ${_products[i]['unit']}',
++          ),
++          trailing: Text(
++            (_products[i]['is_low_stock'] as bool? ?? false)
++                ? 'LOW STOCK'
++                : 'OK',
++            style: TextStyle(
++              color: (_products[i]['is_low_stock'] as bool? ?? false)
++                  ? Colors.red
++                  : const Color(0xFF0D9488),
++              fontWeight: FontWeight.bold,
++            ),
++          ),
+         ),
+       ),
+     );
+@@ -132,33 +300,117 @@
+       child: Column(
+         crossAxisAlignment: CrossAxisAlignment.stretch,
+         children: [
+-          const Text('Receive Stock', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0F172A))),
++          const Text(
++            'Receive Stock',
++            style: TextStyle(
++              fontSize: 18,
++              fontWeight: FontWeight.bold,
++              color: Color(0xFF0F172A),
++            ),
++          ),
+           const SizedBox(height: 16),
+-          Row(children: [
+-            Expanded(child: TextField(controller: _barcodeCtrl, decoration: const InputDecoration(labelText: 'Scan / enter barcode', border: OutlineInputBorder()), onSubmitted: (v) => _lookup(v))),
+-            const SizedBox(width: 8),
+-            IconButton(icon: const Icon(Icons.qr_code_scanner), onPressed: _loading ? null : () => _lookup(_barcodeCtrl.text)),
+-          ]),
+-          const SizedBox(height: 12),
+-          DropdownButtonFormField<Map<String, dynamic>>(
+-            initialValue: _product,
+-            decoration: const InputDecoration(labelText: 'Product', border: OutlineInputBorder()),
+-            items: _products.map((p) => DropdownMenuItem(value: p, child: Text('${p['sku']} — ${p['name']}'))).toList(),
+-            onChanged: (v) => setState(() => _product = v),
+-            validator: (v) => v == null ? 'Select product' : null,
+-          ),
+-          const SizedBox(height: 12),
+-          TextField(controller: _batchCtrl, decoration: const InputDecoration(labelText: 'Batch / lot number', border: OutlineInputBorder())),
+-          const SizedBox(height: 12),
+-          Row(children: [
+-            Expanded(child: TextField(controller: _qtyCtrl, decoration: const InputDecoration(labelText: 'Quantity', border: OutlineInputBorder()), keyboardType: TextInputType.number)),
+-            const SizedBox(width: 12),
+-            Expanded(child: TextField(decoration: const InputDecoration(labelText: 'Expiry date (YYYY-MM-DD)', border: OutlineInputBorder()), onSubmitted: (_) {})),
+-          ]),
++          Row(
++            children: [
++              Expanded(
++                child: TextField(
++                  controller: _barcodeCtrl,
++                  decoration: const InputDecoration(
++                    labelText: 'Scan / enter barcode',
++                    border: OutlineInputBorder(),
++                  ),
++                  onSubmitted: (v) => _lookup(v),
++                ),
++              ),
++              const SizedBox(width: 8),
++              IconButton(
++                icon: const Icon(Icons.qr_code_scanner),
++                onPressed: _loading ? null : () => _lookup(_barcodeCtrl.text),
++              ),
++            ],
++          ),
++          const SizedBox(height: 12),
++          _choice(
++            'Product',
++            _products,
++            _product?['id'] as int?,
++            _selectProduct,
++          ),
++          const SizedBox(height: 12),
++          _choice(
++            'Location',
++            _locations
++                .where((p) => p['business_unit'] == _product?['business_unit'])
++                .toList(),
++            _locationId,
++            (v) => setState(() => _locationId = v),
++          ),
++          const SizedBox(height: 12),
++          TextField(
++            controller: _batchCtrl,
++            decoration: const InputDecoration(
++              labelText: 'Batch / lot number',
++              border: OutlineInputBorder(),
++            ),
++          ),
++          const SizedBox(height: 12),
++          Row(
++            children: [
++              Expanded(
++                child: TextField(
++                  controller: _qtyCtrl,
++                  decoration: const InputDecoration(
++                    labelText: 'Quantity',
++                    border: OutlineInputBorder(),
++                  ),
++                  keyboardType: TextInputType.number,
++                ),
++              ),
++              const SizedBox(width: 12),
++              Expanded(
++                child: TextField(
++                  controller: _expiryCtrl,
++                  decoration: const InputDecoration(
++                    labelText: 'Expiry date (YYYY-MM-DD)',
++                    border: OutlineInputBorder(),
++                  ),
++                ),
++              ),
++            ],
++          ),
+           const SizedBox(height: 20),
+-          if (_msg != null) Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: _isError ? Colors.red.withValues(alpha: 0.1) : const Color(0xFF0D9488).withValues(alpha: 0.1), border: Border.all(color: _isError ? Colors.red : const Color(0xFF0D9488)), borderRadius: BorderRadius.circular(8)), child: Text(_msg!, style: TextStyle(color: _isError ? Colors.red : const Color(0xFF0D9488)))),
++          if (_msg != null)
++            Container(
++              padding: const EdgeInsets.all(12),
++              decoration: BoxDecoration(
++                color: _isError
++                    ? Colors.red.withValues(alpha: 0.1)
++                    : const Color(0xFF0D9488).withValues(alpha: 0.1),
++                border: Border.all(
++                  color: _isError ? Colors.red : const Color(0xFF0D9488),
++                ),
++                borderRadius: BorderRadius.circular(8),
++              ),
++              child: Text(
++                _msg!,
++                style: TextStyle(
++                  color: _isError ? Colors.red : const Color(0xFF0D9488),
++                ),
++              ),
++            ),
+           if (_msg != null) const SizedBox(height: 12),
+-          SizedBox(height: 50, child: ElevatedButton(onPressed: _loading ? null : _receive, child: _loading ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Confirm Receive'))),
++          SizedBox(
++            height: 50,
++            child: ElevatedButton(
++              onPressed: _loading ? null : _receive,
++              child: _loading
++                  ? const SizedBox(
++                      height: 20,
++                      width: 20,
++                      child: CircularProgressIndicator(strokeWidth: 2),
++                    )
++                  : const Text('Confirm Receive'),
++            ),
++          ),
+         ],
+       ),
+     );
+@@ -170,27 +422,107 @@
+       child: Column(
+         crossAxisAlignment: CrossAxisAlignment.stretch,
+         children: [
+-          const Text('Issue Stock', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0F172A))),
++          const Text(
++            'Issue Stock',
++            style: TextStyle(
++              fontSize: 18,
++              fontWeight: FontWeight.bold,
++              color: Color(0xFF0F172A),
++            ),
++          ),
+           const SizedBox(height: 16),
+-          Row(children: [
+-            Expanded(child: TextField(controller: _barcodeCtrl, decoration: const InputDecoration(labelText: 'Scan / enter barcode', border: OutlineInputBorder()), onSubmitted: (v) => _lookup(v))),
+-            const SizedBox(width: 8),
+-            IconButton(icon: const Icon(Icons.qr_code_scanner), onPressed: _loading ? null : () => _lookup(_barcodeCtrl.text)),
+-          ]),
+-          const SizedBox(height: 12),
+-          DropdownButtonFormField<Map<String, dynamic>>(
+-            initialValue: _product,
+-            decoration: const InputDecoration(labelText: 'Product', border: OutlineInputBorder()),
+-            items: _products.map((p) => DropdownMenuItem(value: p, child: Text('${p['sku']} — ${p['name']}'))).toList(),
+-            onChanged: (v) => setState(() => _product = v),
+-            validator: (v) => v == null ? 'Select product' : null,
+-          ),
+-          const SizedBox(height: 12),
+-          TextField(controller: _qtyCtrl, decoration: const InputDecoration(labelText: 'Quantity to issue', border: OutlineInputBorder()), keyboardType: TextInputType.number),
++          Row(
++            children: [
++              Expanded(
++                child: TextField(
++                  controller: _barcodeCtrl,
++                  decoration: const InputDecoration(
++                    labelText: 'Scan / enter barcode',
++                    border: OutlineInputBorder(),
++                  ),
++                  onSubmitted: (v) => _lookup(v),
++                ),
++              ),
++              const SizedBox(width: 8),
++              IconButton(
++                icon: const Icon(Icons.qr_code_scanner),
++                onPressed: _loading ? null : () => _lookup(_barcodeCtrl.text),
++              ),
++            ],
++          ),
++          const SizedBox(height: 12),
++          _choice(
++            'Product',
++            _products,
++            _product?['id'] as int?,
++            _selectProduct,
++          ),
++          const SizedBox(height: 12),
++          _choice(
++            'Department',
++            _departments
++                .where((p) => p['business_unit'] == _product?['business_unit'])
++                .toList(),
++            _departmentId,
++            (v) => setState(() => _departmentId = v),
++          ),
++          const SizedBox(height: 12),
++          _choice(
++            'Batch',
++            _batches
++                .where(
++                  (p) =>
++                      p['product'] == _product?['id'] &&
++                      (p['usable_quantity'] as num? ?? 0) > 0,
++                )
++                .toList(),
++            _batchId,
++            (v) => setState(() => _batchId = v),
++            name: 'batch_number',
++          ),
++          const SizedBox(height: 12),
++          TextField(
++            controller: _qtyCtrl,
++            decoration: const InputDecoration(
++              labelText: 'Quantity to issue',
++              border: OutlineInputBorder(),
++            ),
++            keyboardType: TextInputType.number,
++          ),
+           const SizedBox(height: 20),
+-          if (_msg != null) Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: _isError ? Colors.red.withValues(alpha: 0.1) : const Color(0xFF0D9488).withValues(alpha: 0.1), border: Border.all(color: _isError ? Colors.red : const Color(0xFF0D9488)), borderRadius: BorderRadius.circular(8)), child: Text(_msg!, style: TextStyle(color: _isError ? Colors.red : const Color(0xFF0D9488)))),
++          if (_msg != null)
++            Container(
++              padding: const EdgeInsets.all(12),
++              decoration: BoxDecoration(
++                color: _isError
++                    ? Colors.red.withValues(alpha: 0.1)
++                    : const Color(0xFF0D9488).withValues(alpha: 0.1),
++                border: Border.all(
++                  color: _isError ? Colors.red : const Color(0xFF0D9488),
++                ),
++                borderRadius: BorderRadius.circular(8),
++              ),
++              child: Text(
++                _msg!,
++                style: TextStyle(
++                  color: _isError ? Colors.red : const Color(0xFF0D9488),
++                ),
++              ),
++            ),
+           if (_msg != null) const SizedBox(height: 12),
+-          SizedBox(height: 50, child: ElevatedButton(onPressed: _loading ? null : _issue, child: _loading ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Confirm Issue'))),
++          SizedBox(
++            height: 50,
++            child: ElevatedButton(
++              onPressed: _loading ? null : _issue,
++              child: _loading
++                  ? const SizedBox(
++                      height: 20,
++                      width: 20,
++                      child: CircularProgressIndicator(strokeWidth: 2),
++                    )
++                  : const Text('Confirm Issue'),
++            ),
++          ),
+         ],
+       ),
+     );
+@@ -198,6 +530,7 @@
+ 
+   @override
+   void dispose() {
++    _expiryCtrl.dispose();
+     _qtyCtrl.dispose();
+     _batchCtrl.dispose();
+     _barcodeCtrl.dispose();
+--- mobile\uems_mobile\lib\screens\login_screen.dart
++++ mobile\uems_mobile\lib\screens\login_screen.dart
+@@ -1,8 +1,6 @@
+ import 'package:flutter/material.dart';
+ import 'package:provider/provider.dart';
+ import '../core/app_state.dart';
+-import 'home_screen.dart';
+-import 'settings_screen.dart';
+ 
+ class LoginScreen extends StatefulWidget {
+   const LoginScreen({super.key});
+@@ -16,6 +14,13 @@
+   final _passCtrl = TextEditingController();
+   final _formKey = GlobalKey<FormState>();
+   bool _detectingIp = false;
++
++  @override
++  void dispose() {
++    _emailCtrl.dispose();
++    _passCtrl.dispose();
++    super.dispose();
++  }
+ 
+   void _fill(String email) {
+     _emailCtrl.text = email;
+@@ -40,11 +45,17 @@
+       await state.detectAndSetApiBase();
+       if (mounted && state.error == null) {
+         ScaffoldMessenger.of(context).showSnackBar(
+-          const SnackBar(content: Text('Server found on local network'), backgroundColor: Color(0xFF0D9488)),
++          const SnackBar(
++            content: Text('Server found on local network'),
++            backgroundColor: Color(0xFF0D9488),
++          ),
+         );
+       } else if (mounted && state.error != null) {
+         ScaffoldMessenger.of(context).showSnackBar(
+-          SnackBar(content: Text('Auto-detect failed: ${state.error}'), backgroundColor: Colors.red),
++          SnackBar(
++            content: Text('Auto-detect failed: ${state.error}'),
++            backgroundColor: Colors.red,
++          ),
+         );
+       }
+     } finally {
+@@ -63,10 +74,27 @@
+             child: Column(
+               mainAxisAlignment: MainAxisAlignment.center,
+               children: [
+-                const Icon(Icons.workspaces_outlined, size: 64, color: Color(0xFF0F172A)),
+-                const SizedBox(height: 24),
+-                const Text('Unified Enterprise Management', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Color(0xFF0F172A))),
+-                const Text('Buildakar Innovation', style: TextStyle(color: Color(0xFF0D9488), fontWeight: FontWeight.w600)),
++                const Icon(
++                  Icons.workspaces_outlined,
++                  size: 64,
++                  color: Color(0xFF0F172A),
++                ),
++                const SizedBox(height: 24),
++                const Text(
++                  'Unified Enterprise Management',
++                  style: TextStyle(
++                    fontSize: 22,
++                    fontWeight: FontWeight.bold,
++                    color: Color(0xFF0F172A),
++                  ),
++                ),
++                const Text(
++                  'Buildakar Innovation',
++                  style: TextStyle(
++                    color: Color(0xFF0D9488),
++                    fontWeight: FontWeight.w600,
++                  ),
++                ),
+                 const SizedBox(height: 32),
+                 Form(
+                   key: _formKey,
+@@ -74,26 +102,40 @@
+                     children: [
+                       TextFormField(
+                         controller: _emailCtrl,
+-                        decoration: const InputDecoration(labelText: 'Work email', prefixIcon: Icon(Icons.email_outlined)),
++                        decoration: const InputDecoration(
++                          labelText: 'Work email',
++                          prefixIcon: Icon(Icons.email_outlined),
++                        ),
+                         keyboardType: TextInputType.emailAddress,
+-                        validator: (v) => (v == null || v.isEmpty) ? 'Enter email' : null,
++                        validator: (v) =>
++                            (v == null || v.isEmpty) ? 'Enter email' : null,
+                       ),
+                       const SizedBox(height: 16),
+                       TextFormField(
+                         controller: _passCtrl,
+-                        decoration: const InputDecoration(labelText: 'Password', prefixIcon: Icon(Icons.lock_outlined)),
++                        decoration: const InputDecoration(
++                          labelText: 'Password',
++                          prefixIcon: Icon(Icons.lock_outlined),
++                        ),
+                         obscureText: true,
+-                        validator: (v) => (v == null || v.isEmpty) ? 'Enter password' : null,
++                        validator: (v) =>
++                            (v == null || v.isEmpty) ? 'Enter password' : null,
+                       ),
+                       const SizedBox(height: 24),
+                       Consumer<AppState>(
+-                        builder: (_, auth, __) => SizedBox(
++                        builder: (_, auth, child) => SizedBox(
+                           width: double.infinity,
+                           height: 50,
+                           child: ElevatedButton(
+                             onPressed: auth.loading ? null : _login,
+                             child: auth.loading
+-                                ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
++                                ? const SizedBox(
++                                    height: 20,
++                                    width: 20,
++                                    child: CircularProgressIndicator(
++                                      strokeWidth: 2,
++                                    ),
++                                  )
+                                 : const Text('Sign in'),
+                           ),
+                         ),
+@@ -104,7 +146,10 @@
+                 const SizedBox(height: 24),
+                 const Divider(),
+                 const SizedBox(height: 16),
+-                const Text('Auto-detect server on local network', style: TextStyle(fontSize: 12, color: Colors.grey)),
++                const Text(
++                  'Auto-detect server on local network',
++                  style: TextStyle(fontSize: 12, color: Colors.grey),
++                ),
+                 const SizedBox(height: 8),
+                 SizedBox(
+                   width: double.infinity,
+@@ -112,13 +157,20 @@
+                   child: OutlinedButton.icon(
+                     onPressed: _detectingIp ? null : _autoDetectIp,
+                     icon: _detectingIp
+-                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
++                        ? const SizedBox(
++                            width: 16,
++                            height: 16,
++                            child: CircularProgressIndicator(strokeWidth: 2),
++                          )
+                         : const Icon(Icons.wifi, size: 16),
+                     label: const Text('Auto-detect UEMS server'),
+                   ),
+                 ),
+                 const SizedBox(height: 24),
+-                const Text('Demo accounts (password: admin123)', style: TextStyle(fontSize: 12, color: Colors.grey)),
++                const Text(
++                  'Demo accounts (password: admin123)',
++                  style: TextStyle(fontSize: 12, color: Colors.grey),
++                ),
+                 const SizedBox(height: 8),
+                 Wrap(
+                   spacing: 8,
+--- mobile\uems_mobile\lib\screens\qr_scanner_screen.dart
++++ mobile\uems_mobile\lib\screens\qr_scanner_screen.dart
+@@ -5,62 +5,152 @@
+ import 'package:provider/provider.dart';
+ import '../core/app_state.dart';
+ import '../core/api_client.dart';
+-import 'home_screen.dart';
+ 
+ class QrScannerScreen extends StatefulWidget {
+-  const QrScannerScreen({super.key});
++  const QrScannerScreen({super.key, this.apiClient});
++  final ApiClient? apiClient;
+ 
+   @override
+   State<QrScannerScreen> createState() => _QrScannerScreenState();
+ }
+ 
+-class _QrScannerScreenState extends State<QrScannerScreen> {
+-  final MobileScannerController _controller = MobileScannerController();
++class _QrScannerScreenState extends State<QrScannerScreen>
++    with WidgetsBindingObserver {
++  final MobileScannerController _controller = MobileScannerController(
++    autoStart: false,
++  );
+   final _manualCtrl = TextEditingController();
+   bool _processing = false;
+   String? _result;
+   bool _success = false;
+   String _action = 'check_in';
+-  final Set<String> _recent = {};
+-  Timer? _resetTimer;
++  String? _lastSubmission;
++  DateTime? _lastSubmittedAt;
++  bool _cameraBusy = false;
++  Completer<void>? _cameraIdle;
++  StreamSubscription<BarcodeCapture>? _barcodes;
++  bool _foreground = true;
+   String? _cameraError;
+   bool _isScanning = false;
+ 
+   @override
+   void dispose() {
+-    _resetTimer?.cancel();
++    WidgetsBinding.instance.removeObserver(this);
++    unawaited(_barcodes?.cancel());
+     _manualCtrl.dispose();
+-    _controller.dispose();
++    unawaited(_releaseCamera());
+     super.dispose();
+   }
+ 
++  Future<void> _releaseCamera() async {
++    await _cameraIdle?.future;
++    await _controller.dispose();
++  }
++
++  @override
++  void initState() {
++    super.initState();
++    WidgetsBinding.instance.addObserver(this);
++    _barcodes = _controller.barcodes.listen(_onDetect);
++  }
++
++  @override
++  void didChangeAppLifecycleState(AppLifecycleState state) {
++    _foreground = state == AppLifecycleState.resumed;
++    unawaited(_syncCamera());
++  }
++
++  Future<void> _syncCamera() async {
++    if (_cameraBusy || !mounted) return;
++    _cameraBusy = true;
++    final idle = _cameraIdle = Completer<void>();
++    try {
++      if (_isScanning && _foreground) {
++        await _controller.start();
++        if (mounted && (!_isScanning || !_foreground)) await _controller.stop();
++        if (mounted) {
++          setState(
++            () => _cameraError = _controller.value.error == null
++                ? null
++                : 'Camera unavailable. Allow camera access in Settings, or enter the token below.',
++          );
++        }
++      } else {
++        await _controller.stop();
++      }
++    } catch (_) {
++      if (mounted) {
++        setState(
++          () => _cameraError =
++              'Unable to start camera. You can enter the token below.',
++        );
++      }
++    } finally {
++      _cameraBusy = false;
++      idle.complete();
++      if (mounted &&
++          _cameraError == null &&
++          (_isScanning && _foreground) != _controller.value.isRunning) {
++        unawaited(_syncCamera());
++      }
++    }
++  }
++
+   Future<void> _onDetect(BarcodeCapture capture) async {
+-    final code = capture.barcodes.first.rawValue;
+-    if (code == null || code.isEmpty || _processing) return;
+-    if (_recent.contains(code)) return;
+-    _recent.add(code);
+-    _resetTimer?.cancel();
+-    _resetTimer = Timer(const Duration(seconds: 5), () => _recent.remove(code));
++    if (!_isScanning || !_foreground || !mounted) return;
++    for (final barcode in capture.barcodes) {
++      final code = barcode.rawValue?.trim();
++      if (code != null && code.isNotEmpty) {
++        await _verify(code);
++        return;
++      }
++    }
++  }
++
++  Future<void> _verify(String token) async {
++    if (!mounted || _processing || token.isEmpty) return;
++    final key = '$_action:$token';
++    final now = DateTime.now();
++    if (_success && _lastSubmission == key) return;
++    if (_lastSubmission == key &&
++        _lastSubmittedAt != null &&
++        now.difference(_lastSubmittedAt!) < const Duration(seconds: 5)) {
++      return;
++    }
++    _lastSubmission = key;
++    _lastSubmittedAt = now;
++    final action = _action;
+     setState(() {
+       _processing = true;
+       _result = null;
+       _success = false;
+     });
+-    await _verify(code);
+-  }
+-
+-  Future<void> _verify(String token) async {
+-    http.Response res = await ApiClient.instance.post(
+-      '/attendance/rotating-qr/verify/',
+-      body: {'token': token, 'action': _action},
+-    );
+-    if (res.statusCode == 404) {
+-      res = await ApiClient.instance.post(
+-        '/attendance/one-time-qr/verify/',
+-        body: {'token': token, 'action': _action},
++    try {
++      var res = await (widget.apiClient ?? ApiClient.instance).post(
++        '/attendance/rotating-qr/verify/',
++        body: {'token': token, 'action': action},
+       );
+-    }
+-    if (mounted) _handleResult(res);
++      final data = ApiClient.decodeBody(res);
++      if (res.statusCode == 404 &&
++          data is Map &&
++          data['code'] == 'one_time_token') {
++        res = await (widget.apiClient ?? ApiClient.instance).post(
++          '/attendance/one-time-qr/verify/',
++          body: {'token': token, 'action': action},
++        );
++      }
++      if (mounted) _handleResult(res);
++    } catch (_) {
++      if (mounted) {
++        setState(() {
++          _success = false;
++          _result =
++              'Could not confirm attendance. Check your connection and attendance history before retrying.';
++        });
++      }
++    } finally {
++      if (mounted) setState(() => _processing = false);
++    }
+   }
+ 
+   void _handleResult(http.Response res) {
+@@ -76,9 +166,11 @@
+     if (mounted) {
+       ScaffoldMessenger.of(context).showSnackBar(
+         SnackBar(
+-          content: Text(res.statusCode == 200
+-              ? 'Attendance recorded: $detail'
+-              : 'Rejected: $detail'),
++          content: Text(
++            res.statusCode == 200
++                ? 'Attendance recorded: $detail'
++                : 'Rejected: $detail',
++          ),
+           backgroundColor: res.statusCode == 200
+               ? const Color(0xFF0D9488)
+               : Colors.red,
+@@ -91,28 +183,24 @@
+   void _manualSubmit() {
+     final token = _manualCtrl.text.trim();
+     if (token.isEmpty || _processing) return;
+-    setState(() {
+-      _processing = true;
+-      _result = null;
+-      _success = false;
+-    });
+     _verify(token);
+   }
+ 
+   @override
+   Widget build(BuildContext context) {
+-    final state = Provider.of<AppState>(context);
+-    final user = state.user;
+-    final canGenOt = (user?['role_code'] == 'super_admin' ||
+-        user?['role_code'] == 'hr_admin' ||
+-        user?['role_code'] == 'hr_manager');
+-
++    final state = context.watch<AppState>();
++    if (!state.isAuthenticated) {
++      return const Scaffold(
++        body: Center(child: Text('Sign in to record attendance.')),
++      );
++    }
+     return Scaffold(
+       appBar: AppBar(
+-        title: const Text('QR Attendance'),
++        title: Text(_action == 'check_in' ? 'QR Check In' : 'QR Check Out'),
+         actions: [
+           PopupMenuButton<String>(
+             initialValue: _action,
++            enabled: !_processing,
+             onSelected: (v) => setState(() => _action = v),
+             itemBuilder: (_) => const [
+               PopupMenuItem(value: 'check_in', child: Text('Check In')),
+@@ -121,15 +209,15 @@
+           ),
+         ],
+       ),
+-      body: canGenOt ? _buildAdminView() : _buildEmployeeView(),
++      body: _buildScannerView(),
+     );
+   }
+ 
+-  Widget _buildAdminView() {
+-    return Column(
++  Widget _buildScannerView() {
++    return ListView(
+       children: [
+-        Expanded(
+-          flex: 2,
++        SizedBox(
++          height: 260,
+           child: Container(
+             decoration: BoxDecoration(
+               border: Border.all(color: Colors.grey.shade300),
+@@ -138,19 +226,35 @@
+             child: ClipRRect(
+               borderRadius: BorderRadius.circular(8),
+               child: MobileScanner(
++                errorBuilder: (_, error, child) => const Center(
++                  child: Text(
++                    'Camera unavailable. Check camera permission or use manual entry.',
++                    textAlign: TextAlign.center,
++                  ),
++                ),
+                 controller: _controller,
+-                onDetect: _onDetect,
+               ),
+             ),
+           ),
+         ),
+-        Expanded(
+-          flex: 3,
++        SizedBox(
+           child: Padding(
+             padding: const EdgeInsets.all(20),
+             child: Column(
+               crossAxisAlignment: CrossAxisAlignment.stretch,
+               children: [
++                ElevatedButton.icon(
++                  onPressed: _toggleScanner,
++                  icon: Icon(_isScanning ? Icons.stop : Icons.camera_alt),
++                  label: Text(_isScanning ? 'Stop Camera' : 'Start Camera'),
++                ),
++                if (_cameraError != null)
++                  Text(
++                    _cameraError!,
++                    style: const TextStyle(color: Colors.red),
++                  ),
++                if (_processing) const LinearProgressIndicator(),
++                const SizedBox(height: 12),
+                 const Text(
+                   'Point camera at the workplace QR code',
+                   style: TextStyle(fontSize: 15, color: Color(0xFF64748B)),
+@@ -160,12 +264,10 @@
+                   Container(
+                     padding: const EdgeInsets.all(14),
+                     decoration: BoxDecoration(
+-                      color: (_success ? const Color(0xFF0D9488)
+-                          : Colors.red).withValues(alpha: 0.1),
++                      color: (_success ? const Color(0xFF0D9488) : Colors.red)
++                          .withValues(alpha: 0.1),
+                       border: Border.all(
+-                        color: _success
+-                            ? const Color(0xFF0D9488)
+-                            : Colors.red,
++                        color: _success ? const Color(0xFF0D9488) : Colors.red,
+                       ),
+                       borderRadius: BorderRadius.circular(8),
+                     ),
+@@ -215,9 +317,9 @@
+                       icon: const Icon(Icons.send),
+                       onPressed: _processing ? null : _manualSubmit,
+                     ),
+-                  ]),
+-                ],
+-              ),
++                  ],
++                ),
++              ],
+             ),
+           ),
+         ),
+@@ -225,98 +327,11 @@
+     );
+   }
+ 
+-  Widget _buildEmployeeView() {
+-    return Center(
+-      child: Padding(
+-        padding: const EdgeInsets.all(32),
+-        child: Column(
+-          mainAxisAlignment: MainAxisAlignment.center,
+-          children: [
+-            const Icon(
+-              Icons.qr_code_scanner,
+-              size: 80,
+-              color: Color(0xFF0D9488),
+-            ),
+-            const SizedBox(height: 24),
+-            const Text(
+-              'QR Attendance Scanner',
+-              style: TextStyle(
+-                fontSize: 22,
+-                fontWeight: FontWeight.bold,
+-                color: Color(0xFF0F172A),
+-              ),
+-            ),
+-            const SizedBox(height: 8),
+-            const Text(
+-              'Scan workplace QR codes to check in / check out',
+-              style: TextStyle(fontSize: 14, color: Color(0xFF64748B)),
+-              textAlign: TextAlign.center,
+-            ),
+-            const SizedBox(height: 32),
+-            SizedBox(
+-              width: double.infinity,
+-              height: 56,
+-              child: ElevatedButton.icon(
+-                onPressed: _toggleScanner,
+-                icon: Icon(
+-                  _isScanning ? Icons.stop : Icons.qr_code_scanner,
+-                  color: Colors.white,
+-                ),
+-                label: Text(
+-                  _isScanning ? 'Stop Camera' : 'Start Camera',
+-                  style: const TextStyle(
+-                    color: Colors.white,
+-                    fontSize: 16,
+-                    fontWeight: FontWeight.w600,
+-                  ),
+-                ),
+-                style: ElevatedButton.styleFrom(
+-                  backgroundColor: const Color(0xFF0D9488),
+-                  shape: RoundedRectangleBorder(
+-                    borderRadius: BorderRadius.circular(12),
+-                  ),
+-                ),
+-              ),
+-            ),
+-            if (_isScanning) ...[
+-              const SizedBox(height: 20),
+-              Container(
+-                width: double.infinity,
+-                height: 300,
+-                decoration: BoxDecoration(
+-                  border: Border.all(
+-                    color: const Color(0xFF0D9488),
+-                    width: 2,
+-                  ),
+-                  borderRadius: BorderRadius.circular(12),
+-                ),
+-                child: MobileScanner(
+-                  controller: _controller,
+-                  onDetect: _onDetect,
+-                ),
+-              ),
+-            ],
+-            if (_cameraError != null && _cameraError!.isNotEmpty) ...[
+-              const SizedBox(height: 12),
+-              Text(
+-                _cameraError!,
+-                style: const TextStyle(color: Colors.red, fontSize: 12),
+-              ),
+-            ],
+-          ],
+-        ),
+-      ),
+-    );
+-  }
+-
+-  bool get scannerActive => _controller.isRunning;
+-
+-  Future<void> _toggleScanner() async {
+-    if (_isScanning) {
+-      await _controller.stop();
+-    } else {
+-      await _controller.start();
+-    }
+-    setState(() { _isScanning = !_isScanning; });
++  void _toggleScanner() {
++    setState(() {
++      _isScanning = !_isScanning;
++      _cameraError = null;
++    });
++    unawaited(_syncCamera());
+   }
+ }
+--- mobile\uems_mobile\lib\screens\settings_screen.dart
++++ mobile\uems_mobile\lib\screens\settings_screen.dart
+@@ -27,10 +27,23 @@
+ 
+   Future<void> _save() async {
+     setState(() => _loading = true);
+-    await context.read<AppState>().setApiBaseUrl(_ctrl.text.trim());
+-    if (mounted) {
+-      setState(() => _loading = false);
+-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('API URL saved')));
++    try {
++      await context.read<AppState>().setApiBaseUrl(_ctrl.text.trim());
++      if (mounted) {
++        ScaffoldMessenger.of(
++          context,
++        ).showSnackBar(const SnackBar(content: Text('API URL saved')));
++      }
++    } catch (_) {
++      if (mounted) {
++        ScaffoldMessenger.of(context).showSnackBar(
++          const SnackBar(
++            content: Text('Enter a valid HTTP or HTTPS server URL.'),
++          ),
++        );
++      }
++    } finally {
++      if (mounted) setState(() => _loading = false);
+     }
+   }
+ 
+@@ -39,27 +52,60 @@
+     final state = context.watch<AppState>();
+     return Scaffold(
+       appBar: AppBar(title: const Text('Settings')),
+-      body: Padding(
++      body: SingleChildScrollView(
+         padding: const EdgeInsets.all(20),
+         child: Column(
+           crossAxisAlignment: CrossAxisAlignment.start,
+           children: [
+-            const Text('API server URL', style: TextStyle(fontWeight: FontWeight.w600)),
+-            const Text('Point this at the running Django backend.', style: TextStyle(fontSize: 12, color: Colors.grey)),
++            const Text(
++              'API server URL',
++              style: TextStyle(fontWeight: FontWeight.w600),
++            ),
++            const Text(
++              'Point this at the running Django backend.',
++              style: TextStyle(fontSize: 12, color: Colors.grey),
++            ),
+             const SizedBox(height: 8),
+-            TextField(controller: _ctrl, decoration: const InputDecoration(hintText: 'http://10.0.2.2:8000', border: OutlineInputBorder())),
++            TextField(
++              controller: _ctrl,
++              decoration: const InputDecoration(
++                hintText: 'http://10.0.2.2:8000',
++                border: OutlineInputBorder(),
++              ),
++            ),
+             const SizedBox(height: 16),
+-            const Text('Default: http://10.0.2.2:8000 (Android emulator)', style: TextStyle(fontSize: 12, color: Colors.grey)),
++            const Text(
++              'Default: http://10.0.2.2:8000 (Android emulator)',
++              style: TextStyle(fontSize: 12, color: Colors.grey),
++            ),
+             const SizedBox(height: 24),
+-            SizedBox(width: double.infinity, height: 48, child: ElevatedButton(onPressed: _loading ? null : _save, child: _loading ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Save'))),
+-            const Spacer(),
++            SizedBox(
++              width: double.infinity,
++              height: 48,
++              child: ElevatedButton(
++                onPressed: _loading ? null : _save,
++                child: _loading
++                    ? const SizedBox(
++                        height: 20,
++                        width: 20,
++                        child: CircularProgressIndicator(strokeWidth: 2),
++                      )
++                    : const Text('Save'),
++              ),
++            ),
++            const SizedBox(height: 24),
+             const Divider(),
+             ListTile(
+               leading: const Icon(Icons.logout, color: Colors.red),
+-              title: const Text('Sign out', style: TextStyle(color: Colors.red)),
++              title: const Text(
++                'Sign out',
++                style: TextStyle(color: Colors.red),
++              ),
+               onTap: () async {
+                 await state.logout();
+-                if (mounted) Navigator.pushNamedAndRemoveUntil(context, '/login', (_) => false);
++                if (context.mounted) {
++                  Navigator.popUntil(context, (route) => route.isFirst);
++                }
+               },
+             ),
+           ],
+--- mobile\uems_mobile\ios\Runner\Info.plist
++++ mobile\uems_mobile\ios\Runner\Info.plist
+@@ -2,6 +2,8 @@
+ <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+ <plist version="1.0">
+ <dict>
++	<key>NSCameraUsageDescription</key>
++	<string>Scan workplace QR codes to record attendance.</string>
+ 	<key>CADisableMinimumFrameDurationOnPhone</key>
+ 	<true/>
+ 	<key>CFBundleDevelopmentRegion</key>
+--- backend\attendance\models.py
++++ backend\attendance\models.py
+@@ -111,7 +111,7 @@
+ 
+     def is_expired(self, now=None):
+         now = now or timezone.now()
+-        return now > self.expires_at or not self.is_active
++        return now >= self.expires_at or not self.is_active
+ 
+     @classmethod
+     def current_for(cls, business_unit, action, now=None):
+@@ -211,7 +211,7 @@
+         now = now or timezone.now()
+         if self.status != self.STATUS_ACTIVE:
+             return False, "token-not-active"
+-        if now > self.expires_at:
++        if now >= self.expires_at:
+             return False, "token-expired"
+         if self.employee_id != employee.pk:
+             return False, "wrong-employee"
+@@ -222,56 +222,31 @@
+     def redeem(self, employee, now=None):
+         from django.db import transaction
+ 
+-        now = now or timezone.now()
+-        ok, reason = self.is_valid_for(employee, now=now)
+-        if not ok:
+-            return False, reason
+-        # Duplicate attendance prevention: same employee already checked in
+-        # (for check_in) without a matching check_out in this shift window.
+-        if self.action == AttendanceEvent.ACTION_CHECK_IN:
+-            already = AttendanceEvent.objects.filter(
+-                employee=employee,
+-                action=AttendanceEvent.ACTION_CHECK_IN,
+-                business_unit=self.business_unit,
+-            ).exclude(
+-                id__in=AttendanceEvent.objects.filter(
+-                    employee=employee,
+-                    action=AttendanceEvent.ACTION_CHECK_OUT,
+-                    business_unit=self.business_unit,
+-                ).values_list("id", flat=True)
++        with transaction.atomic():
++            # Acquire the employee write lock before reading attendance/token state.
++            # Unlike select_for_update(), this also serializes writers on SQLite.
++            Employee.objects.filter(pk=employee.pk).update(is_active=models.F("is_active"))
++            self.refresh_from_db()
++            now = now or timezone.now()
++            ok, reason = self.is_valid_for(employee, now=now)
++            if not ok:
++                return False, reason
++            last = AttendanceEvent.objects.filter(employee=employee).order_by("-timestamp", "-pk").first()
++            checked_in = last is not None and last.action == AttendanceEvent.ACTION_CHECK_IN
++            if self.action == AttendanceEvent.ACTION_CHECK_IN and checked_in:
++                return False, "already-checked-in"
++            if self.action == AttendanceEvent.ACTION_CHECK_OUT and not checked_in:
++                return False, "not-checked-in"
++            changed = type(self).objects.filter(pk=self.pk, status=self.STATUS_ACTIVE).update(
++                status=self.STATUS_USED, redeemed_at=now
+             )
+-            # crude: any prior check-in without later check-out
+-            last_in = (
+-                AttendanceEvent.objects.filter(
+-                    employee=employee,
+-                    action=AttendanceEvent.ACTION_CHECK_IN,
+-                    business_unit=self.business_unit,
+-                )
+-                .order_by("-timestamp")
+-                .first()
+-            )
+-            last_out = (
+-                AttendanceEvent.objects.filter(
+-                    employee=employee,
+-                    action=AttendanceEvent.ACTION_CHECK_OUT,
+-                    business_unit=self.business_unit,
+-                )
+-                .order_by("-timestamp")
+-                .first()
+-            )
+-            if last_in and (last_out is None or last_in.timestamp > last_out.timestamp):
+-                return False, "already-checked-in"
+-        with transaction.atomic():
++            if not changed:
++                return False, "token-not-active"
+             self.status = self.STATUS_USED
+             self.redeemed_at = now
+-            self.save(update_fields=["status", "redeemed_at"])
+             event = AttendanceEvent.objects.create(
+-                employee=employee,
+-                business_unit=self.business_unit,
+-                action=self.action,
+-                timestamp=now,
+-                source=AttendanceEvent.SOURCE_QR_ONE_TIME,
+-                notes=f"One-time QR {self.token[:8]}",
++                employee=employee, business_unit=self.business_unit, action=self.action,
++                timestamp=now, source=AttendanceEvent.SOURCE_QR_ONE_TIME,
+             )
+         return True, event
+ 
+--- backend\attendance\views.py
++++ backend\attendance\views.py
+@@ -5,8 +5,10 @@
+ """
+ 
+ from datetime import timedelta
+-
+-from django.db import transaction
++from functools import wraps
++
++from django.db import OperationalError, connection, transaction
++from django.db.models import F
+ from django.utils import timezone
+ from rest_framework import status, viewsets
+ from rest_framework.decorators import action
+@@ -16,7 +18,7 @@
+ import secrets
+ 
+ from core.models import BusinessUnit, Employee
+-from core.permissions import BusinessUnitScoped, RolePermission
++from core.permissions import BusinessUnitScoped, IsAuthenticatedActive, RolePermission
+ 
+ from .models import (
+     AttendanceEvent,
+@@ -34,37 +36,38 @@
+     OneTimeQRRevokeSerializer,
+     OneTimeQRTokenSerializer,
+     RotatingQRTokenSerializer,
++    RotatingQRVerifySerializer,
+     ShiftSerializer,
+     AttendanceCorrectionRequestSerializer,
+ )
+ 
+ 
++def _attendance_write(view):
++    @wraps(view)
++    def wrapped(*args, **kwargs):
++        try:
++            return view(*args, **kwargs)
++        except OperationalError as exc:
++            if connection.vendor != "sqlite" or "locked" not in str(exc).lower():
++                raise
++            return Response(
++                {"detail": "Attendance is busy. Check your history before retrying.", "code": "attendance_busy"},
++                status=503, headers={"Retry-After": "1"},
++            )
++    return wrapped
++
++
+ def _employee_for_user(user):
+     try:
+-        return Employee.objects.select_related("business_unit", "user").get(user=user)
++        return Employee.objects.select_related("business_unit", "user").get(user=user, is_active=True)
+     except Employee.DoesNotExist:
+         return None
+ 
+ 
+ def _active_check_in_exists(employee):
+     """True if the employee has a check-in without a later check-out."""
+-    last_in = (
+-        AttendanceEvent.objects.filter(
+-            employee=employee, action=AttendanceEvent.ACTION_CHECK_IN
+-        )
+-        .order_by("-timestamp")
+-        .first()
+-    )
+-    if last_in is None:
+-        return False
+-    last_out = (
+-        AttendanceEvent.objects.filter(
+-            employee=employee, action=AttendanceEvent.ACTION_CHECK_OUT
+-        )
+-        .order_by("-timestamp")
+-        .first()
+-    )
+-    return last_out is None or last_in.timestamp > last_out.timestamp
++    last = AttendanceEvent.objects.filter(employee=employee).order_by("-timestamp", "-pk").first()
++    return last is not None and last.action == AttendanceEvent.ACTION_CHECK_IN
+ 
+ 
+ class ShiftViewSet(viewsets.ModelViewSet):
+@@ -120,18 +123,20 @@
+     POST /qr/rotating/verify/   {token, action?}
+     """
+ 
+-    permission_classes = [BusinessUnitScoped]
++    permission_classes = [IsAuthenticatedActive, BusinessUnitScoped]
+ 
+     def list(self, request):
+         """Current active rotating token for a workplace + action."""
+         bu_id = request.query_params.get("business_unit")
+         action = request.query_params.get("action", AttendanceEvent.ACTION_CHECK_IN)
+         now = timezone.now()
++        if action not in dict(AttendanceEvent.ACTION_CHOICES):
++            return Response({"detail": "Invalid attendance action."}, status=400)
+ 
+         if bu_id:
+             try:
+                 bu = BusinessUnit.objects.get(pk=bu_id)
+-            except BusinessUnit.DoesNotExist:
++            except (BusinessUnit.DoesNotExist, ValueError, TypeError):
+                 return Response({"detail": "Business unit not found."}, status=404)
+             if not request.user.can_access_business_unit(bu):
+                 return Response({"detail": "Not authorized for this unit."}, status=403)
+@@ -146,9 +151,12 @@
+         return Response(serializer.data)
+ 
+     @action(detail=False, methods=["post"])
++    @_attendance_write
+     def verify(self, request):
+-        token = request.data.get("token", "")
+-        action = request.data.get("action", AttendanceEvent.ACTION_CHECK_IN)
++        ser = RotatingQRVerifySerializer(data=request.data)
++        ser.is_valid(raise_exception=True)
++        token = ser.validated_data["token"]
++        action = ser.validated_data.get("action", AttendanceEvent.ACTION_CHECK_IN)
+         now = timezone.now()
+ 
+         employee = _employee_for_user(request.user)
+@@ -158,7 +166,12 @@
+         try:
+             qr = RotatingQRToken.objects.get(token=token)
+         except RotatingQRToken.DoesNotExist:
+-            return Response({"detail": "Invalid QR token."}, status=404)
++            # An explicit discriminator, never a generic route/resource 404.
++            one_time = OneTimeQRToken.objects.filter(
++                token=token, employee=employee, business_unit=employee.business_unit
++            ).exists()
++            return Response({"detail": "Invalid rotating QR token.",
++                             "code": "one_time_token" if one_time else "invalid_token"}, status=404)
+ 
+         if not request.user.can_access_business_unit(qr.business_unit):
+             return Response({"detail": "Not authorized for this workplace."}, status=403)
+@@ -169,26 +182,23 @@
+         if qr.business_unit_id != employee.business_unit_id:
+             return Response({"detail": "Employee not assigned to this workplace."}, status=403)
+ 
+-        # One redemption per employee/action per token.
+-        already = RotatingQRRedemption.objects.filter(
+-            token=qr, employee=employee, action=action
+-        ).exists()
+-        if already:
+-            return Response({"detail": "Attendance already recorded for this QR."}, status=409)
+-
+-        # Duplicate check-in prevention: no active unmatched check-in.
+-        if action == AttendanceEvent.ACTION_CHECK_IN and _active_check_in_exists(employee):
+-            return Response({"detail": "Employee already has an active check-in."}, status=409)
+-
+         with transaction.atomic():
++            # A write lock also serializes SQLite, whose SELECT FOR UPDATE is a no-op.
++            Employee.objects.filter(pk=employee.pk).update(is_active=F("is_active"))
++            now = timezone.now()
++            if qr.is_expired(now=now):
++                return Response({"detail": "QR code has expired."}, status=410)
++            if RotatingQRRedemption.objects.filter(token=qr, employee=employee, action=action).exists():
++                return Response({"detail": "Attendance already recorded for this QR."}, status=409)
++            checked_in = _active_check_in_exists(employee)
++            if action == AttendanceEvent.ACTION_CHECK_IN and checked_in:
++                return Response({"detail": "Employee already has an active check-in."}, status=409)
++            if action == AttendanceEvent.ACTION_CHECK_OUT and not checked_in:
++                return Response({"detail": "No active check-in to check out from."}, status=409)
+             RotatingQRRedemption.objects.create(token=qr, employee=employee, action=action)
+             event = AttendanceEvent.objects.create(
+-                employee=employee,
+-                business_unit=qr.business_unit,
+-                action=action,
+-                timestamp=now,
+-                source=AttendanceEvent.SOURCE_QR_ROTATING,
+-                notes=f"Rotating QR {qr.token[:8]}",
++                employee=employee, business_unit=qr.business_unit, action=action,
++                timestamp=now, source=AttendanceEvent.SOURCE_QR_ROTATING,
+             )
+ 
+         return Response(
+@@ -202,7 +212,7 @@
+ class OneTimeQRTokenViewSet(viewsets.ModelViewSet):
+     queryset = OneTimeQRToken.objects.all().order_by("-created_at")
+     serializer_class = OneTimeQRTokenSerializer
+-    permission_classes = [BusinessUnitScoped]
++    permission_classes = [IsAuthenticatedActive, BusinessUnitScoped]
+     http_method_names = ["get", "post", "head", "options"]
+ 
+     def get_queryset(self):
+@@ -212,7 +222,10 @@
+             return qs.none()
+         if user.is_superuser or user.has_role("super_admin"):
+             return qs
+-        return qs.filter(business_unit=user.business_unit)
++        qs = qs.filter(business_unit=user.business_unit)
++        if not user.has_role("hr_manager"):
++            qs = qs.filter(employee__user=user)
++        return qs
+ 
+     def perform_create(self, serializer):
+         user = self.request.user
+@@ -254,19 +267,28 @@
+ 
+     @action(detail=True, methods=["post"])
+     def revoke(self, request, pk=None):
++        if not (request.user.is_superuser or request.user.has_role("super_admin", "hr_manager")):
++            return Response({"detail": "Only HR/administrators can revoke QR codes."}, status=403)
+         token = self.get_object()
+         if token.status != OneTimeQRToken.STATUS_ACTIVE:
+             return Response({"detail": "Token is not active."}, status=400)
+         if not request.user.can_access_business_unit(token.business_unit):
+             return Response({"detail": "Not authorized."}, status=403)
++        changed = OneTimeQRToken.objects.filter(pk=token.pk, status=OneTimeQRToken.STATUS_ACTIVE).update(
++            status=OneTimeQRToken.STATUS_REVOKED
++        )
++        if not changed:
++            return Response({"detail": "Token is not active."}, status=400)
+         token.status = OneTimeQRToken.STATUS_REVOKED
+-        token.save(update_fields=["status"])
+         return Response({"detail": "Token revoked.", "status": token.status})
+ 
+     @action(detail=False, methods=["post"])
++    @_attendance_write
+     def verify(self, request):
+-        token = request.data.get("token", "")
+-        action = request.data.get("action", AttendanceEvent.ACTION_CHECK_IN)
++        ser = RotatingQRVerifySerializer(data=request.data)
++        ser.is_valid(raise_exception=True)
++        token = ser.validated_data["token"]
++        action = ser.validated_data.get("action", AttendanceEvent.ACTION_CHECK_IN)
+         now = timezone.now()
+ 
+         employee = _employee_for_user(request.user)
+@@ -281,7 +303,9 @@
+         if not request.user.can_access_business_unit(qr.business_unit):
+             return Response({"detail": "Not authorized for this workplace."}, status=403)
+ 
+-        ok, result = qr.redeem(employee, now=now)
++        if qr.action != action:
++            return Response({"detail": "QR action mismatch."}, status=400)
++        ok, result = qr.redeem(employee)
+         if not ok:
+             messages = {
+                 "token-not-active": "This QR code is not active.",
+@@ -289,6 +313,7 @@
+                 "wrong-employee": "This QR code was issued for another employee.",
+                 "wrong-workplace": "This QR code is for another workplace.",
+                 "already-checked-in": "Employee already has an active check-in.",
++                "not-checked-in": "No active check-in to check out from.",
+             }
+             return Response({"detail": messages.get(result, "Verification failed.")}, status=400)
+ 
+@@ -298,11 +323,7 @@
+                 "detail": "Attendance recorded.",
+                 "token": out.data,
+                 "event": AttendanceEventSerializer(
+-                    AttendanceEvent.objects.filter(
+-                        employee=employee, business_unit=qr.business_unit, source=AttendanceEvent.SOURCE_QR_ONE_TIME
+-                    )
+-                    .order_by("-timestamp")
+-                    .first(),
++                    result,
+                     context={"request": request},
+                 ).data,
+             }
+--- backend\core\permissions.py
++++ backend\core\permissions.py
+@@ -67,4 +67,4 @@
+             return False
+         if user.is_superuser or user.has_role("super_admin"):
+             return True
+-        return user.role_code in self.allowed_roles
++        return user.role_code in getattr(view, "allowed_roles", self.allowed_roles)
+--- backend\core\views.py
++++ backend\core\views.py
+@@ -7,7 +7,7 @@
+ from rest_framework_simplejwt.tokens import RefreshToken
+ 
+ from .models import BusinessUnit, Department, Employee, Role, User
+-from .permissions import BusinessUnitScoped, RolePermission
++from .permissions import BusinessUnitScoped, IsAuthenticatedActive, RolePermission
+ from .serializers import (
+     BusinessUnitSerializer,
+     DepartmentSerializer,
+@@ -63,7 +63,7 @@
+                 pass
+         return Response({"detail": "Logged out."})
+ 
+-    @action(detail=False, methods=["get"])
++    @action(detail=False, methods=["get"], permission_classes=[IsAuthenticatedActive])
+     def me(self, request):
+         return Response(UserSerializer(request.user).data)
+ 
+@@ -86,6 +86,14 @@
+     queryset = Department.objects.all().order_by("business_unit__name", "name")
+     serializer_class = DepartmentSerializer
+     permission_classes = [BusinessUnitScoped]
++
++
++    def get_queryset(self):
++        qs = super().get_queryset()
++        user = self.request.user
++        if user.is_superuser or user.has_role("super_admin"):
++            return qs
++        return qs.filter(business_unit=user.business_unit)
+ 
+ 
+ class UserViewSet(viewsets.ModelViewSet):
+--- backend\inventory\models.py
++++ backend\inventory\models.py
+@@ -66,7 +66,7 @@
+ 
+     def usable_stock(self):
+         return sum(
+-            (b.quantity_remaining or 0)
++            b.usable_quantity()
+             for b in self.batches.filter(status=ProductBatch.STATUS_USABLE)
+         )
+ 
+@@ -128,8 +128,13 @@
+             raise ValueError(
+                 f"Insufficient stock: requested {quantity}, available {self.quantity_remaining}."
+             )
+-        self.quantity_remaining = F("quantity_remaining") - quantity
+-        self.save(update_fields=["quantity_remaining"])
++        changed = type(self).objects.filter(
++            pk=self.pk, status=self.STATUS_USABLE, quantity_remaining__gte=quantity
++        ).filter(Q(expiry_date__isnull=True) | Q(expiry_date__gte=timezone.now().date())).update(
++            quantity_remaining=F("quantity_remaining") - quantity
++        )
++        if not changed:
++            raise ValueError("Batch is unavailable or has insufficient usable stock.")
+         self.refresh_from_db(fields=["quantity_remaining"])
+         return self.quantity_remaining
+ 
+@@ -192,7 +197,7 @@
+                 batch.refresh_from_db(fields=["quantity_remaining", "quantity_received"])
+             StockMovement.objects.create(
+                 product_batch=batch,
+-                location=self.location,
++                location=self.receipt.location,
+                 movement_type=StockMovement.TYPE_RECEIPT,
+                 quantity=self.quantity,
+                 reference=self.receipt.reference,
+--- backend\inventory\serializers.py
++++ backend\inventory\serializers.py
+@@ -1,3 +1,4 @@
++from django.db import transaction
+ from rest_framework import serializers
+ 
+ from .models import (
+@@ -59,6 +60,7 @@
+ 
+ 
+ class StockReceiptLineSerializer(serializers.ModelSerializer):
++    quantity = serializers.IntegerField(min_value=1)
+     class Meta:
+         model = StockReceiptLine
+         fields = ["id", "product", "batch_number", "expiry_date", "quantity", "unit_cost"]
+@@ -73,6 +75,23 @@
+                   "notes", "received_at", "lines"]
+         read_only_fields = ["received_by", "received_at"]
+ 
++    def validate(self, attrs):
++        unit = attrs.get("business_unit", getattr(self.instance, "business_unit", None))
++        request = self.context.get("request")
++        if request and not request.user.can_access_business_unit(unit):
++            raise serializers.ValidationError("Not authorized for this business unit.")
++        destination = attrs.get("location", getattr(self.instance, "location", None))
++        if destination is None or destination.business_unit_id != unit.pk:
++            raise serializers.ValidationError("Destination must belong to this business unit.")
++        if "lines" in attrs and not attrs["lines"]:
++            raise serializers.ValidationError("At least one stock line is required.")
++        for line in attrs.get("lines", []):
++            product = line["product"]
++            if product.business_unit_id != unit.pk:
++                raise serializers.ValidationError("Product must belong to this business unit.")
++        return attrs
++
++    @transaction.atomic
+     def create(self, validated_data):
+         lines_data = validated_data.pop("lines")
+         receipt = StockReceipt.objects.create(**validated_data)
+@@ -84,6 +103,7 @@
+ 
+ 
+ class StockIssueLineSerializer(serializers.ModelSerializer):
++    quantity = serializers.IntegerField(min_value=1)
+     class Meta:
+         model = StockIssueLine
+         fields = ["id", "product_batch", "quantity"]
+@@ -98,6 +118,23 @@
+                   "notes", "issued_at", "lines"]
+         read_only_fields = ["issued_by", "issued_at"]
+ 
++    def validate(self, attrs):
++        unit = attrs.get("business_unit", getattr(self.instance, "business_unit", None))
++        request = self.context.get("request")
++        if request and not request.user.can_access_business_unit(unit):
++            raise serializers.ValidationError("Not authorized for this business unit.")
++        destination = attrs.get("department", getattr(self.instance, "department", None))
++        if destination is None or destination.business_unit_id != unit.pk:
++            raise serializers.ValidationError("Destination must belong to this business unit.")
++        if "lines" in attrs and not attrs["lines"]:
++            raise serializers.ValidationError("At least one stock line is required.")
++        for line in attrs.get("lines", []):
++            product = line["product_batch"].product
++            if product.business_unit_id != unit.pk:
++                raise serializers.ValidationError("Product must belong to this business unit.")
++        return attrs
++
++    @transaction.atomic
+     def create(self, validated_data):
+         from rest_framework.exceptions import ValidationError
+ 
+@@ -113,6 +150,7 @@
+ 
+ 
+ class StockTransferLineSerializer(serializers.ModelSerializer):
++    quantity = serializers.IntegerField(min_value=1)
+     class Meta:
+         model = StockTransferLine
+         fields = ["id", "product_batch", "quantity"]
+@@ -127,6 +165,7 @@
+                   "transferred_by", "notes", "transferred_at", "lines"]
+         read_only_fields = ["transferred_by", "transferred_at"]
+ 
++    @transaction.atomic
+     def create(self, validated_data):
+         from rest_framework.exceptions import ValidationError
+ 
+--- /dev/null
++++ backend/attendance/test_regressions.py
+@@ -0,0 +1,92 @@
++from datetime import timedelta
++from unittest.mock import patch
++
++from django.utils import timezone
++
++from .tests import BaseQRTest
++from .models import AttendanceEvent, OneTimeQRToken, RotatingQRToken
++
++
++class QRRegressionTests(BaseQRTest):
++    def setUp(self):
++        super().setUp()
++        self.client.force_authenticate(self.emp_user)
++
++    def token(self, action="check_in"):
++        return OneTimeQRToken.objects.create(
++            token=f"one-time-{action}", employee=self.emp, business_unit=self.health,
++            action=action, expires_at=timezone.now() + timedelta(minutes=5),
++        )
++
++    def verify(self, token, action="check_in", kind="one-time"):
++        return self.client.post(f"/api/v1/attendance/{kind}-qr/verify/",
++                                {"token": token, "action": action}, format="json")
++
++    def test_explicit_discriminator_only_for_owned_one_time_token(self):
++        qr = self.token()
++        self.assertEqual(self.verify(qr.token, kind="rotating").data["code"], "one_time_token")
++        self.assertEqual(self.verify("unknown", kind="rotating").data["code"], "invalid_token")
++        self.client.force_authenticate(self.emp2_user)
++        self.assertEqual(self.verify(qr.token, kind="rotating").data["code"], "invalid_token")
++
++    def test_action_mismatch_does_not_consume_token(self):
++        qr = self.token()
++        self.assertEqual(self.verify(qr.token, "check_out").status_code, 400)
++        qr.refresh_from_db()
++        self.assertEqual(qr.status, "active")
++        self.assertEqual(AttendanceEvent.objects.count(), 0)
++
++    def test_check_out_requires_check_in_and_cannot_repeat(self):
++        qr_in, qr_out = self.token(), self.token("check_out")
++        self.assertEqual(self.verify(qr_out.token, "check_out").status_code, 400)
++        self.assertEqual(self.verify(qr_in.token).status_code, 200)
++        result = self.verify(qr_out.token, "check_out")
++        self.assertEqual(result.status_code, 200)
++        self.assertEqual(result.data["event"]["action"], "check_out")
++        self.assertEqual(self.verify(qr_out.token, "check_out").status_code, 400)
++        self.assertEqual(AttendanceEvent.objects.count(), 2)
++
++    def test_stale_model_cannot_redeem_used_token_after_checkout(self):
++        qr = self.token()
++        stale = OneTimeQRToken.objects.get(pk=qr.pk)
++        self.assertTrue(qr.redeem(self.emp)[0])
++        self.assertTrue(self.token("check_out").redeem(self.emp)[0])
++        self.assertFalse(stale.redeem(self.emp)[0])
++        self.assertEqual(AttendanceEvent.objects.count(), 2)
++
++    def test_event_failure_rolls_back_token_consumption(self):
++        qr = self.token()
++        with patch("attendance.models.AttendanceEvent.objects.create", side_effect=RuntimeError):
++            with self.assertRaises(RuntimeError):
++                qr.redeem(self.emp)
++        qr.refresh_from_db()
++        self.assertEqual(qr.status, "active")
++
++    def test_expiration_boundary(self):
++        qr = self.token()
++        self.assertFalse(qr.is_valid_for(self.emp, now=qr.expires_at)[0])
++        rotating = RotatingQRToken.current_for(self.health, "check_in")
++        self.assertTrue(rotating.is_expired(now=rotating.expires_at))
++
++    def test_bad_payloads_and_unapproved_user(self):
++        for kind in ("rotating", "one-time"):
++            for token, action in (("", "check_in"), ({}, "check_in"), ("x", "invalid")):
++                self.assertEqual(self.verify(token, action, kind).status_code, 400)
++        self.emp_user.is_approved = False
++        self.emp_user.save()
++        self.assertEqual(self.verify(self.token().token).status_code, 403)
++
++    def test_staff_cannot_list_other_tokens_or_revoke(self):
++        qr = self.token()
++        self.client.force_authenticate(self.emp2_user)
++        result = self.client.get("/api/v1/attendance/one-time-qr/")
++        self.assertEqual(result.data["results"], [])
++        self.assertEqual(self.client.post(f"/api/v1/attendance/one-time-qr/{qr.pk}/revoke/").status_code, 403)
++
++    def test_rotating_checkout_without_checkin_rejected(self):
++        qr = RotatingQRToken.current_for(self.health, "check_out")
++        self.assertEqual(self.verify(qr.token, "check_out", "rotating").status_code, 409)
++
++    def test_auth_me_requires_authentication(self):
++        self.client.force_authenticate(user=None)
++        self.assertEqual(self.client.get("/api/v1/auth/me/").status_code, 401)
+--- /dev/null
++++ backend/attendance/test_concurrency.py
+@@ -0,0 +1,51 @@
++from concurrent.futures import ThreadPoolExecutor
++from datetime import timedelta
++from threading import Barrier
++
++from django.db import connections
++from django.test import TransactionTestCase
++from django.utils import timezone
++from rest_framework.test import APIClient
++
++from core.models import User
++from .models import AttendanceEvent, OneTimeQRToken, RotatingQRToken
++from .tests import BaseQRTest
++
++
++class ConcurrentQRTests(TransactionTestCase):
++    def setUp(self):
++        BaseQRTest.setUp(self)
++
++    def race(self, kinds):
++        rotating = RotatingQRToken.current_for(self.health, "check_in")
++        once = OneTimeQRToken.objects.create(
++            token="concurrent-token", employee=self.emp, business_unit=self.health,
++            action="check_in", expires_at=timezone.now() + timedelta(minutes=5),
++        )
++        barrier = Barrier(2)
++        user_id = self.emp_user.pk
++
++        def submit(kind):
++            try:
++                client = APIClient()
++                client.force_authenticate(User.objects.get(pk=user_id))
++                barrier.wait(timeout=10)
++                response = client.post(f"/api/v1/attendance/{kind}-qr/verify/", {
++                    "token": rotating.token if kind == "rotating" else once.token,
++                    "action": "check_in",
++                }, format="json")
++                return response.status_code
++            finally:
++                connections.close_all()
++
++        with ThreadPoolExecutor(max_workers=2) as pool:
++            results = list(pool.map(submit, kinds))
++        self.assertEqual(results.count(200), 1, results)
++        self.assertTrue(all(code in (200, 400, 409, 503) for code in results), results)
++        self.assertEqual(AttendanceEvent.objects.filter(employee=self.emp).count(), 1)
++
++    def test_same_one_time_token_concurrently(self):
++        self.race(["one-time", "one-time"])
++
++    def test_different_token_types_concurrently(self):
++        self.race(["rotating", "one-time"])
+--- /dev/null
++++ backend/inventory/test_regressions.py
+@@ -0,0 +1,35 @@
++from unittest.mock import patch
++
++from .tests import InventoryIntegrityTests
++from .models import StockReceipt, StockMovement, StockIssue
++
++
++class InventoryRegressionTests(InventoryIntegrityTests):
++    def receipt(self):
++        return self.client.post("/api/v1/inventory/receipts/", {
++            "reference": "receipt-regression", "business_unit": self.health.pk,
++            "location": self.loc.pk,
++            "lines": [{"product": self.prod.pk, "batch_number": "NEW", "quantity": 3,
++                       "unit_cost": "1.00"}],
++        }, format="json")
++
++    def test_receipt_records_parent_location(self):
++        result = self.receipt()
++        self.assertEqual(result.status_code, 201, result.data)
++        self.assertEqual(StockMovement.objects.get(reference="receipt-regression").location, self.loc)
++        self.assertEqual(self.prod.batches.get(batch_number="NEW").quantity_remaining, 3)
++
++    def test_receipt_failure_rolls_back_everything(self):
++        with patch("inventory.models.StockMovement.objects.create", side_effect=RuntimeError):
++            with self.assertRaises(RuntimeError):
++                self.receipt()
++        self.assertFalse(StockReceipt.objects.exists())
++        self.assertFalse(self.prod.batches.filter(batch_number="NEW").exists())
++
++    def test_failed_issue_does_not_leave_header(self):
++        result = self._post_issue([{"product_batch": self.batch.pk, "quantity": 1000}])
++        self.assertEqual(result.status_code, 400)
++        self.assertFalse(StockIssue.objects.exists())
++
++    def test_usable_stock_excludes_expired_batches(self):
++        self.assertEqual(self.prod.usable_stock(), 100)
+--- /dev/null
++++ mobile/uems_mobile/test/qr_regression_test.dart
+@@ -0,0 +1,246 @@
++import 'dart:async';
++import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:flutter_secure_storage/flutter_secure_storage.dart';
++import 'package:http/http.dart' as http;
++import 'package:http/testing.dart';
++import 'package:provider/provider.dart';
++import 'package:shared_preferences/shared_preferences.dart';
++import 'package:uems_mobile/core/api_client.dart';
++import 'package:uems_mobile/core/app_state.dart';
++import 'package:uems_mobile/screens/qr_scanner_screen.dart';
++
++void main() {
++  TestWidgetsFlutterBinding.ensureInitialized();
++  setUp(() {
++    FlutterSecureStorage.setMockInitialValues({});
++    SharedPreferences.setMockInitialValues({
++      'api_base_url': 'http://localhost:8000',
++    });
++    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
++        .setMockMethodCallHandler(
++          const MethodChannel('dev.steenbakker.mobile_scanner/scanner/method'),
++          (_) async => null,
++        );
++  });
++
++  test('base URL has exactly one API prefix', () {
++    expect(
++      ApiClient.normalizeBase('http://10.0.2.2:8000/'),
++      'http://10.0.2.2:8000/api/v1',
++    );
++    expect(
++      ApiClient.normalizeBase('http://10.0.2.2:8000/api/v1/'),
++      'http://10.0.2.2:8000/api/v1',
++    );
++    expect(() => ApiClient.normalizeBase('server:8000'), throwsFormatException);
++  });
++
++  test('HTML and empty responses do not crash JSON parsing', () {
++    expect(
++      ApiClient.decodeBody(http.Response('<html>Bad gateway</html>', 502)),
++      isNull,
++    );
++    expect(ApiClient.decodeBody(http.Response('', 204)), isNull);
++  });
++
++  test('401 notifies session expiry except during login', () async {
++    var expired = false;
++    final api = ApiClient(
++      client: MockClient((_) async => http.Response('{}', 401)),
++    );
++    api.onUnauthorized = () async {
++      expired = true;
++    };
++    await api.get('/auth/me/');
++    expect(expired, isTrue);
++    expired = false;
++    await api.post('/auth/login/');
++    expect(expired, isFalse);
++    api.dispose();
++  });
++
++  Future<AppState> scanner(WidgetTester tester, http.Client client) async {
++    final state = AppState();
++    await state.ready;
++    await state.setAuthenticated(
++      access: 'test-token',
++      user: {'role_code': 'employee'},
++    );
++    await tester.pumpWidget(
++      ChangeNotifierProvider.value(
++        value: state,
++        child: MaterialApp(
++          home: QrScannerScreen(apiClient: ApiClient(client: client)),
++        ),
++      ),
++    );
++    await tester.pumpAndSettle();
++    return state;
++  }
++
++  Future<void> submit(WidgetTester tester) async {
++    await tester.ensureVisible(find.byType(TextField));
++    await tester.enterText(find.byType(TextField), 'opaque-token');
++    await tester.ensureVisible(find.byIcon(Icons.send));
++    await tester.tap(find.byIcon(Icons.send));
++    await tester.pump();
++  }
++
++  testWidgets('camera starts once, pauses, resumes and stops on disposal', (
++    tester,
++  ) async {
++    final methods = <String>[];
++    final messenger =
++        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
++    messenger.setMockMethodCallHandler(
++      const MethodChannel('dev.steenbakker.mobile_scanner/scanner/event'),
++      (_) async => null,
++    );
++    messenger.setMockMethodCallHandler(
++      const MethodChannel('dev.steenbakker.mobile_scanner/scanner/method'),
++      (call) async {
++        methods.add(call.method);
++        if (call.method == 'state') return 1;
++        if (call.method == 'start') {
++          return {
++            'textureId': 1,
++            'numberOfCameras': 1,
++            'size': {'width': 640.0, 'height': 480.0},
++          };
++        }
++        return null;
++      },
++    );
++    final state = await scanner(
++      tester,
++      MockClient((_) async => http.Response('{}', 400)),
++    );
++    expect(methods.where((m) => m == 'start'), isEmpty);
++    await tester.tap(find.text('Start Camera'));
++    await tester.pumpAndSettle();
++    expect(methods.where((m) => m == 'start').length, 1);
++    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
++    await tester.pumpAndSettle();
++    expect(methods.where((m) => m == 'stop').length, 1);
++    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
++    await tester.pumpAndSettle();
++    expect(methods.where((m) => m == 'start').length, 2);
++    await tester.pumpWidget(const SizedBox());
++    await tester.pumpAndSettle();
++    expect(methods.where((m) => m == 'stop').length, 2);
++    expect(tester.takeException(), isNull);
++    state.dispose();
++  });
++
++  testWidgets('permission denial leaves manual entry available', (
++    tester,
++  ) async {
++    final messenger =
++        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
++    messenger.setMockMethodCallHandler(
++      const MethodChannel('dev.steenbakker.mobile_scanner/scanner/event'),
++      (_) async => null,
++    );
++    messenger.setMockMethodCallHandler(
++      const MethodChannel('dev.steenbakker.mobile_scanner/scanner/method'),
++      (call) async {
++        if (call.method == 'state') return 2;
++        if (call.method == 'request') return false;
++        return null;
++      },
++    );
++    final state = await scanner(
++      tester,
++      MockClient(
++        (_) async => http.Response('{"detail":"Attendance recorded."}', 200),
++      ),
++    );
++    await tester.tap(find.text('Start Camera'));
++    await tester.pumpAndSettle();
++    expect(find.textContaining('Allow camera access'), findsOneWidget);
++    await submit(tester);
++    await tester.pumpAndSettle();
++    expect(find.text('Attendance recorded.'), findsOneWidget);
++    expect(tester.takeException(), isNull);
++    await tester.pumpWidget(const SizedBox());
++    await tester.pumpAndSettle();
++    state.dispose();
++  });
++
++  for (final discriminator in [false, true]) {
++    testWidgets('404 fallback requires discriminator: $discriminator', (
++      tester,
++    ) async {
++      final paths = <String>[];
++      final state = await scanner(
++        tester,
++        MockClient((request) async {
++          paths.add(request.url.path);
++          return paths.length == 1
++              ? http.Response(
++                  discriminator
++                      ? '{"code":"one_time_token"}'
++                      : '<html>Not found</html>',
++                  404,
++                )
++              : http.Response('{"detail":"Attendance recorded."}', 200);
++        }),
++      );
++      await submit(tester);
++      await tester.pumpAndSettle();
++      expect(paths.length, discriminator ? 2 : 1);
++      if (discriminator) expect(paths.last, endsWith('/one-time-qr/verify/'));
++      expect(tester.takeException(), isNull);
++      await tester.pumpWidget(const SizedBox());
++      state.dispose();
++    });
++  }
++
++  testWidgets('pending submission is single-flight and safe after disposal', (
++    tester,
++  ) async {
++    var count = 0;
++    final response = Completer<http.Response>();
++    final state = await scanner(
++      tester,
++      MockClient((_) {
++        count++;
++        return response.future;
++      }),
++    );
++    await submit(tester);
++    await tester.tap(find.byIcon(Icons.send));
++    await tester.pump();
++    expect(count, 1);
++    await tester.pumpWidget(const SizedBox());
++    response.complete(http.Response('{"detail":"Attendance recorded."}', 200));
++    await tester.pumpAndSettle();
++    expect(tester.takeException(), isNull);
++    state.dispose();
++  });
++
++  testWidgets('small-screen manual entry and network failure recover loading', (
++    tester,
++  ) async {
++    tester.view.physicalSize = const Size(320, 480);
++    tester.view.devicePixelRatio = 1;
++    addTearDown(tester.view.resetPhysicalSize);
++    addTearDown(tester.view.resetDevicePixelRatio);
++    final state = await scanner(
++      tester,
++      MockClient((_) async => throw http.ClientException('offline')),
++    );
++    await submit(tester);
++    await tester.pumpAndSettle();
++    expect(find.byType(LinearProgressIndicator), findsNothing);
++    expect(
++      find.textContaining('Could not confirm attendance.'),
++      findsOneWidget,
++    );
++    expect(tester.takeException(), isNull);
++    await tester.pumpWidget(const SizedBox());
++    state.dispose();
++  });
++}
+--- /dev/null
++++ mobile/uems_mobile/test/attendance_hours_test.dart
+@@ -0,0 +1,30 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:uems_mobile/screens/home_screen.dart';
++
++void main() {
++  Map<String, dynamic> event(String action, DateTime time) => {
++    'action': action,
++    'timestamp': time.toIso8601String(),
++  };
++
++  test('hours exclude breaks and include current check-in', () {
++    expect(
++      attendanceMinutesToday([
++        event('check_in', DateTime(2026, 10, 29, 8)),
++        event('check_out', DateTime(2026, 10, 29, 12)),
++        event('check_in', DateTime(2026, 10, 29, 13)),
++      ], DateTime(2026, 10, 29, 15)),
++      360,
++    );
++  });
++
++  test('overnight shifts count only the current local day', () {
++    expect(
++      attendanceMinutesToday([
++        event('check_in', DateTime(2026, 10, 28, 22)),
++        event('check_out', DateTime(2026, 10, 29, 6)),
++      ], DateTime(2026, 10, 29, 12)),
++      360,
++    );
++  });
++}

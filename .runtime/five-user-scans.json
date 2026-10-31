@@ -1,0 +1,40 @@
+{
+  "scans": [
+    {
+      "staff": "QR Demo Staff 1",
+      "status": 200,
+      "employee": 13,
+      "event": 49,
+      "source": "qr_rotating"
+    },
+    {
+      "staff": "QR Demo Staff 3",
+      "status": 200,
+      "employee": 15,
+      "event": 50,
+      "source": "qr_rotating"
+    },
+    {
+      "staff": "QR Demo Staff 4",
+      "status": 200,
+      "employee": 16,
+      "event": 52,
+      "source": "qr_rotating"
+    },
+    {
+      "staff": "QR Demo Staff 2",
+      "status": 200,
+      "employee": 14,
+      "event": 51,
+      "source": "qr_rotating"
+    },
+    {
+      "staff": "QR Demo Staff 5",
+      "status": 200,
+      "employee": 17,
+      "event": 53,
+      "source": "qr_rotating"
+    }
+  ],
+  "errors": []
+}

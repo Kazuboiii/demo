@@ -1,0 +1,41 @@
+const { chromium } = require('C:/Users/Kazuboiii/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+const fs = require('fs');
+const path = require('path');
+(async () => {
+ const browser = await chromium.launch({headless:true,channel:'chrome'});
+ const page = await browser.newPage({viewport:{width:1440,height:1000}});
+ const errors=[]; const failed=[];
+ page.on('pageerror',e=>errors.push(e.message));
+ page.on('response',r=>{if(r.status()>=400 && r.url().includes('/api/v1/'))failed.push({url:r.url(),status:r.status()})});
+ await page.goto('http://127.0.0.1:3000/login');
+ await page.getByLabel('Work email').fill('super@buildakar.com');
+ await page.getByLabel('Password',{exact:true}).fill('admin123');
+ await page.getByRole('button',{name:'Sign in',exact:true}).click();
+ await page.waitForURL('**/dashboard');
+ const results=[];
+ for(const route of ['dashboard','employees','attendance','qr-attendance','fleet','nemt','medicine-delivery','inventory','reports','gps','settings']) {
+  await page.goto('http://127.0.0.1:3000/'+route);
+  await page.locator('main').waitFor();
+  await page.waitForTimeout(1800);
+  const text=await page.locator('main').innerText();
+  await page.screenshot({path:path.resolve('.runtime',route+'.png'),fullPage:true});
+  results.push({route,title:text.slice(0,160),overflow:await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)});
+ }
+ await page.setViewportSize({width:390,height:844});
+ await page.goto('http://127.0.0.1:3000/dashboard');await page.waitForTimeout(1200);
+ await page.screenshot({path:path.resolve('.runtime','dashboard-mobile.png'),fullPage:true});
+ results.push({route:'dashboard-mobile',overflow:await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)});
+ await page.getByRole('button',{name:'Menu',exact:true}).click();
+ await page.getByRole('link',{name:'Inventory',exact:true}).click();
+ await page.waitForURL('**/inventory');
+ results.push({route:'mobile-menu-inventory',passed:true});
+ await page.goto('http://127.0.0.1:8000/admin/');
+ await page.locator('input[name="username"]').fill('super@buildakar.com');
+ await page.getByLabel('Password:').fill('admin123');
+ await page.getByRole('button',{name:'Log in'}).click();
+ await page.waitForTimeout(1000);
+ results.push({route:'django-admin',title:await page.title()});
+ fs.writeFileSync('.runtime/browser-smoke.json',JSON.stringify({results,errors,failed},null,2));
+ console.log(JSON.stringify({results,errors,failed},null,2));
+ await browser.close();
+})().catch(e=>{console.error(e);process.exit(1)});

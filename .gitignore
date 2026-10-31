@@ -1,0 +1,129 @@
+# Repo-wide ignores
+#
+# Component-specific ignores still live in:
+#   frontend/.gitignore
+#   mobile/uems_mobile/.gitignore
+#   backend/.venv/.gitignore
+#
+# This root file is mainly for things that apply to the whole workspace,
+# especially secrets, environment files, databases, build outputs, and OS/IDE
+# files that should not be committed from any subdirectory.
+
+# ---------------------------------------------------------------------------
+# Environment, secrets, and runtime configuration
+# ---------------------------------------------------------------------------
+.env
+.env.local
+.env.*.local
+.env.*.production
+.venv
+venv
+env
+*.env
+
+# Never commit real secrets or local-only database files.
+*.pem
+*.key
+*.secret
+credentials.json
+secrets.json
+*.sqlite3
+*.sqlite3-journal
+
+# Keep committed example env files visible.
+!.env
+!.env.example
+!.env.*.example
+
+# If you prefer to treat all .env* files as untracked, remove the three
+# negation lines above and keep the top-level *.env rule.
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.tox/
+.nox/
+*.cover
+*.py,cover
+htmlcov/
+.mypy_cache/
+.pytest_cache/
+
+# ---------------------------------------------------------------------------
+# Node / frontend build artifacts
+# ---------------------------------------------------------------------------
+node_modules/
+.next/
+/out/
+/build
+*.tsbuildinfo
+next-env.d.ts
+
+# ---------------------------------------------------------------------------
+# Flutter / Dart
+# ---------------------------------------------------------------------------
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build
+/coverage
+/app.*.symbols
+/app.*.map.json
+
+# ---------------------------------------------------------------------------
+# OS and desktop editor junk
+# ---------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+.factorypath
+
+# ---------------------------------------------------------------------------
+# IDE
+# ---------------------------------------------------------------------------
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# ---------------------------------------------------------------------------
+# Logs and temp files
+# ---------------------------------------------------------------------------
+*.log
+tmp/
+temp/
+*.bak
+*.bak.*
+
+# ---------------------------------------------------------------------------
+# Generated docs/build artifacts that should not be source
+# ---------------------------------------------------------------------------
+# If you generate PDF/Excel artifacts locally and do not want them committed,
+# ignore the output folder instead of the source docs.
+docs/_build/
+docs/build/

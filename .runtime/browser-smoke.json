@@ -1,0 +1,82 @@
+{
+  "results": [
+    {
+      "route": "dashboard",
+      "title": "Dashboard\n\nWelcome back, Buildakar. Overview of your business units.\n\nRefresh\nActive employees\n\n18\n\nChecked in today\n\n9\n\nAvailable / in-use vehicles\n\n3\n\nPending",
+      "overflow": false
+    },
+    {
+      "route": "employees",
+      "title": "Employees\n\nManage employee records across business units.\n\nAdd Employee\nEmployee ID\tName\tBusiness Unit\tDepartment\tDesignation\tStatus\nEMP-0000\tBuildakar Admin\tHe",
+      "overflow": false
+    },
+    {
+      "route": "attendance",
+      "title": "Attendance\n\nRecord and view check-in / check-out events.\n\ncheck in Now\nCheck In\nRecord check in\nCheck Out\nRecord check out\nRecent Events\n\nServer-authoritative a",
+      "overflow": false
+    },
+    {
+      "route": "qr-attendance",
+      "title": "QR Attendance\n\nSigned in as super@buildakar.com. Each scan records attendance for your own employee account.\n\nShow staff QR display\nAttendance action\nCheck in\nC",
+      "overflow": false
+    },
+    {
+      "route": "fleet",
+      "title": "Fleet Management\n\nVehicles, drivers, and assignments.\n\nVehicles\n\nFleet status and availability.\n\nPlate\tMake\tModel\tCapacity\tStatus\nBA-1001\tToyota\tHiace Ambulance",
+      "overflow": false
+    },
+    {
+      "route": "nemt",
+      "title": "NEMT Transportation\n\nNon-emergency medical transport requests and trips.\n\nNew Request\nTrip Requests\n\nManage transport workflow status.\n\nReference\tPatient\tPickup",
+      "overflow": false
+    },
+    {
+      "route": "medicine-delivery",
+      "title": "Medicine Delivery\n\nDelivery workflow integrated with inventory stock.\n\nDeliveries\n\nTrack medicine delivery status and stock reconciliation.\n\nReference\tRecipient",
+      "overflow": false
+    },
+    {
+      "route": "inventory",
+      "title": "Inventory\n\nProducts, batches, receipts, issues, and stock history.\n\nBusiness unit\nAll accessible units\nHealthcare Operations\nResort Operations\nBarcode lookup\nLo",
+      "overflow": false
+    },
+    {
+      "route": "reports",
+      "title": "Reports & Analytics\n\nKey metrics across business units.\n\nAttendance Events\n\nTotal recorded events.\n\n56\nCheck-ins Today\n\nToday's check-in count.\n\n14\nLow Stock It",
+      "overflow": false
+    },
+    {
+      "route": "gps",
+      "title": "Fleet GPS Simulator\n\nSimulated vehicle telemetry stored to the backend.\n\nStart Simulation\nReset\n+\n−\n Leaflet | © OpenStreetMap contributors\nVehicle Details\n\nSel",
+      "overflow": false
+    },
+    {
+      "route": "settings",
+      "title": "Settings & Access Control\n\nManage users, roles, and permissions.\n\nUsers\n\nPlatform accounts and account status.\n\nEmail\tName\tRole\tBusiness Unit\tStatus\tAction\nanit",
+      "overflow": false
+    },
+    {
+      "route": "dashboard-mobile",
+      "overflow": false
+    },
+    {
+      "route": "mobile-menu-inventory",
+      "passed": true
+    },
+    {
+      "route": "django-admin",
+      "title": "Site administration | Django site admin"
+    }
+  ],
+  "errors": [],
+  "failed": [
+    {
+      "url": "http://127.0.0.1:3000/api/v1/inventory/products/alerts?page=1",
+      "status": 500
+    },
+    {
+      "url": "http://127.0.0.1:3000/api/v1/inventory/products/alerts?page=1",
+      "status": 500
+    }
+  ]
+}
