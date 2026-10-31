@@ -1,11 +1,14 @@
 services:
   - type: web
     name: homs-backend
-    env: python
+    runtime: python
+    rootDir: backend
+    plan: starter
     buildCommand: |
       pip install --upgrade pip
       pip install -r requirements.txt
       python manage.py collectstatic --noinput
+    preDeployCommand: python manage.py migrate --noinput
     startCommand: gunicorn uems_config.wsgi:application --bind 0.0.0.0:${PORT} --workers 3 --timeout 120
     envVars:
       - key: PYTHON_VERSION
@@ -13,7 +16,7 @@ services:
       - key: DJANGO_DEBUG
         value: "false"
       - key: DJANGO_SECRET_KEY
-        sync: false
+        generateValue: true
       - key: DJANGO_ALLOWED_HOSTS
         sync: false
       - key: DJANGO_CSRF_TRUSTED_ORIGINS
@@ -41,15 +44,14 @@ services:
       - key: GUNICORN_TIMEOUT
         value: "120"
       - key: RUN_MIGRATIONS
-        value: "1"
+        value: "0"
+      - key: DJANGO_MEDIA_ROOT
+        value: /opt/render/project/src/backend/media
     disk:
       name: media
-      mountPath: /app/media
-      sizeMiB: 512
+      mountPath: /opt/render/project/src/backend/media
+      sizeGB: 1
     healthCheckPath: /api/v1/health/
-    healthCheckTimeout: 10
-    healthCheckInterval: 10
-    healthCheckTimeoutInit: 10
     autoDeploy: true
 
 databases:

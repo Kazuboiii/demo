@@ -231,6 +231,8 @@ class BusinessUnitScoped(permissions.BasePermission):
         return None
 
     def has_object_permission(self, request, view, obj):
+        if self._is_global(request.user):
+            return True
         unit = self._unit_of(obj)
         if unit is None:
             return False
@@ -274,8 +276,15 @@ class RolePermission(permissions.BasePermission):
 
     def has_permission(self, request, view):
         user = request.user
-        if not user or not user.is_authenticated:
+        if not user or not user.is_authenticated or not user.is_active or not user.is_approved:
             return False
         if user.is_superuser or user.has_role("super_admin"):
             return True
         return user.role_code in getattr(view, "allowed_roles", self.allowed_roles)
+
+
+class UserAdministrationPermission(permissions.BasePermission):
+    """Keep scoped account lookups; only Super Admin may change identities."""
+
+    def has_permission(self, request, view):
+        return request.method in permissions.SAFE_METHODS or role_can(request.user, "admin", "administer")

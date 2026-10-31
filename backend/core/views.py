@@ -3,12 +3,17 @@ from django.contrib.auth import get_user_model
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.views import TokenRefreshView
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from rest_framework_simplejwt.settings import api_settings
+from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import BusinessUnit, Department, Employee, Role, User
-from .permissions import BusinessUnitScoped, IsAuthenticatedActive, RolePermission
+from .permissions import BusinessUnitScoped, IsAuthenticatedActive, RolePermission, UserAdministrationPermission
 from .serializers import (
     BusinessUnitSerializer,
     DepartmentSerializer,
@@ -29,10 +34,25 @@ def _tokens_for_user(user):
     }
 
 
+class ApprovedTokenRefreshSerializer(TokenRefreshSerializer):
+    def validate(self, attrs):
+        token = self.token_class(attrs["refresh"])
+        user = User.objects.filter(**{
+            api_settings.USER_ID_FIELD: token.payload.get(api_settings.USER_ID_CLAIM)
+        }).first()
+        if user is None or not user.is_active or not user.is_approved:
+            raise AuthenticationFailed("Account is unavailable.")
+        return super().validate(attrs)
+
+
+class ApprovedTokenRefreshView(TokenRefreshView):
+    serializer_class = ApprovedTokenRefreshSerializer
+
+
 class AuthViewSet(viewsets.ViewSet):
     permission_classes = [AllowAny]
 
-    @action(detail=False, methods=["post"])
+    @action(detail=False, methods=["post"], authentication_classes=[])
     def login(self, request):
         email = request.data.get("email", "")
         password = request.data.get("password", "")
@@ -54,13 +74,13 @@ class AuthViewSet(viewsets.ViewSet):
             )
         return Response(_tokens_for_user(user))
 
-    @action(detail=False, methods=["post"])
+    @action(detail=False, methods=["post"], authentication_classes=[])
     def logout(self, request):
         refresh_token = request.data.get("refresh")
         if refresh_token:
             try:
                 RefreshToken(refresh_token).blacklist()
-            except Exception:
+            except TokenError:
                 pass
         return Response({"detail": "Logged out."})
 
@@ -138,7 +158,7 @@ class DepartmentViewSet(viewsets.ModelViewSet):
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all().order_by("email")
     serializer_class = UserSerializer
-    permission_classes = [BusinessUnitScoped]
+    permission_classes = [BusinessUnitScoped, UserAdministrationPermission]
 
     def get_queryset(self):
         qs = super().get_queryset()

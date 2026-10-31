@@ -4,6 +4,7 @@ from .health import health
 
 from .views import (
     AuthViewSet,
+    ApprovedTokenRefreshView,
     BusinessUnitViewSet,
     DepartmentViewSet,
     EmployeeViewSet,
@@ -19,4 +20,4 @@ router.register(r"departments", DepartmentViewSet)
 router.register(r"users", UserViewSet)
 router.register(r"employees", EmployeeViewSet)
 
-urlpatterns = [path("health/", health), path("", include(router.urls))]
+urlpatterns = [path("auth/refresh/", ApprovedTokenRefreshView.as_view(), name="token-refresh"), path("health/", health), path("", include(router.urls))]
