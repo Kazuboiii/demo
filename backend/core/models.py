@@ -243,3 +243,100 @@ class Employee(models.Model):
 
     def __str__(self):
         return f"{self.employee_id} - {self.user.get_full_name() or self.user.email}"
+
+
+# ---------------------------------------------------------------------------
+# Enterprise division registry
+# ---------------------------------------------------------------------------
+
+DIVISION_RESORT_AND_HOSPITALITY = "resort_and_hospitality"
+DIVISION_HEALTHCARE_AND_PHARMACY = "healthcare_and_pharmacy"
+DIVISION_HUMAN_RESOURCES = "human_resources"
+DIVISION_FINANCE_AND_ACCOUNTING = "finance_and_accounting"
+DIVISION_TRANSPORTATION_AND_RIDE_MANAGEMENT = "transportation_and_ride_management"
+DIVISION_ATTENDANCE_AND_WORKFORCE_MANAGEMENT = "attendance_and_workforce_management"
+DIVISION_ENTERPRISE_ADMINISTRATION = "enterprise_administration"
+
+ENTERPRISE_DIVISION_NAMES = {
+    "RESORT": "Resort and Hospitality",
+    "HEALTH": "Healthcare and Pharmacy",
+    "HR": "Human Resources",
+    "FINANCE": "Finance and Accounting",
+    "TRANSPORT": "Transportation and Ride Management",
+    "ATTENDANCE": "Attendance and Workforce Management",
+    "ADMIN": "Enterprise Administration",
+}
+
+DIVISION_BY_BUSINESS_UNIT_CODE = {
+    "RESORT": DIVISION_RESORT_AND_HOSPITALITY,
+    "HEALTH": DIVISION_HEALTHCARE_AND_PHARMACY,
+    "HR": DIVISION_HUMAN_RESOURCES,
+    "FINANCE": DIVISION_FINANCE_AND_ACCOUNTING,
+    "TRANSPORT": DIVISION_TRANSPORTATION_AND_RIDE_MANAGEMENT,
+    "ATTENDANCE": DIVISION_ATTENDANCE_AND_WORKFORCE_MANAGEMENT,
+    "ADMIN": DIVISION_ENTERPRISE_ADMINISTRATION,
+}
+
+DIVISION_CORE_BUSINESS_UNITS = frozenset({
+    DIVISION_RESORT_AND_HOSPITALITY,
+    DIVISION_HEALTHCARE_AND_PHARMACY,
+    DIVISION_HUMAN_RESOURCES,
+    DIVISION_FINANCE_AND_ACCOUNTING,
+    DIVISION_TRANSPORTATION_AND_RIDE_MANAGEMENT,
+    DIVISION_ATTENDANCE_AND_WORKFORCE_MANAGEMENT,
+    DIVISION_ENTERPRISE_ADMINISTRATION,
+})
+
+
+class EnterpriseDivision(models.Model):
+    """
+    Logical enterprise division used by the task's division list.
+
+    Each record maps to one concrete operational ``BusinessUnit`` that holds the
+    shared operational data (employees, inventory, fleet, attendance, rides).
+    New divisions from the task brief are represented here; the underlying
+    employee/inventory/fleet/attendance data still lives in the shared
+    operational business units for now.
+    """
+
+    name = models.CharField(max_length=100, unique=True)
+    code = models.CharField(max_length=50, unique=True)
+    business_unit = models.OneToOneField(
+        BusinessUnit,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="enterprise_division",
+        help_text="Operational business unit backing this enterprise division, if any.",
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "Enterprise Division"
+        verbose_name_plural = "Enterprise Divisions"
+
+    def __str__(self):
+        return self.name
+
+    @classmethod
+    def ensure_registered(cls):
+        """Idempotent registration of the brief's required divisions."""
+        for code, name in [
+            (DIVISION_RESORT_AND_HOSPITALITY, "Resort and Hospitality"),
+            (DIVISION_HEALTHCARE_AND_PHARMACY, "Healthcare and Pharmacy"),
+            (DIVISION_HUMAN_RESOURCES, "Human Resources"),
+            (DIVISION_FINANCE_AND_ACCOUNTING, "Finance and Accounting"),
+            (DIVISION_TRANSPORTATION_AND_RIDE_MANAGEMENT, "Transportation and Ride Management"),
+            (DIVISION_ATTENDANCE_AND_WORKFORCE_MANAGEMENT, "Attendance and Workforce Management"),
+            (DIVISION_ENTERPRISE_ADMINISTRATION, "Enterprise Administration"),
+        ]:
+            cls.objects.update_or_create(
+                code=code,
+                defaults={
+                    "name": name,
+                    "business_unit_id": getattr(cls, "_business_unit_for_code", {}).get(code),
+                    "is_active": True,
+                },
+            )

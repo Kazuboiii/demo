@@ -7,5 +7,12 @@ Pillow==13.0.0
 openpyxl==3.1.5
 reportlab==5.1.0
 gunicorn>=23,<24
-psycopg[binary]>=3.2,<4
+psycopg[binary,pool]>=3.2,<4
 whitenoise>=6.8,<7
+# Spatial/transportation support (PostgreSQL + PostGIS only):
+# - psycopg pool support for connection reuse/connection-per-view discipline
+# - GeoAlchemy2 + Shapely for location/geography columns used by transport and
+#   fleet modules. These extensions only activate when the backend connects to
+#   a PostGIS-enabled database; they are safe to install on SQLite dev hosts.
+geoalchemy2>=0.20,<1
+Shapely>=2,<3

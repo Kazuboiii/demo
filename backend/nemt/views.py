@@ -1,16 +1,34 @@
-from django.utils import timezone
 from django.db import transaction
+from django.db import transaction
+from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
 from core.permissions import BusinessUnitScoped
 
-from .models import RideCostEstimate, TransportRequest, Trip
+from .models import (
+    RideAssignment,
+    RideFareEstimate,
+    RideRecord,
+    RideRequest,
+    RideCostEstimate,
+    TransportRequest,
+    Trip,
+    VehicleMaintenanceRecord,
+    TransportationExpense,
+)
 from .serializers import (
+    RideAssignmentSerializer,
+    RideFareEstimateSerializer,
+    RideRecordSerializer,
+    RideRequestSerializer,
     RideCostEstimateSerializer,
+    TransportationExpenseSerializer,
     TransportRequestSerializer,
     TripSerializer,
+    VehicleMaintenanceRecordSerializer,
 )
 
 
@@ -32,8 +50,6 @@ class TransportRequestViewSet(viewsets.ModelViewSet):
         user = self.request.user
         bu = serializer.validated_data.get("business_unit") or user.business_unit
         if not user.can_access_business_unit(bu):
-            from rest_framework.exceptions import PermissionDenied
-
             raise PermissionDenied("Not authorized for this business unit.")
         serializer.save(created_by=user, business_unit=bu)
 
@@ -65,8 +81,6 @@ class TripViewSet(viewsets.ModelViewSet):
         user = self.request.user
         bu = serializer.validated_data["request"].business_unit
         if not user.can_access_business_unit(bu):
-            from rest_framework.exceptions import PermissionDenied
-
             raise PermissionDenied("Not authorized for this business unit.")
         with transaction.atomic():
             trip = serializer.save()
@@ -140,3 +154,233 @@ class RideCostEstimateViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
+
+
+# ---------------------------------------------------------------------------
+# Ride management views
+# ---------------------------------------------------------------------------
+
+
+class RideRequestViewSet(viewsets.ModelViewSet):
+    queryset = RideRequest.objects.all().order_by("-requested_at")
+    serializer_class = RideRequestSerializer
+    permission_classes = [BusinessUnitScoped]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if not user or not user.is_authenticated:
+            return qs.none()
+        if user.is_superuser or user.has_role("super_admin"):
+            return qs
+        return qs.filter(business_unit=user.business_unit)
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        bu = serializer.validated_data.get("business_unit") or user.business_unit
+        if not user.can_access_business_unit(bu):
+            from rest_framework.exceptions import PermissionDenied
+
+            raise PermissionDenied("Not authorized for this business unit.")
+        serializer.save(created_by=user, business_unit=bu)
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        ride = self.get_object()
+        if ride.status in (RideRequest.STATUS_COMPLETED, RideRequest.STATUS_CANCELLED, RideRequest.STATUS_FAILED):
+            return Response({"detail": "Cannot cancel this ride."}, status=400)
+        ride.status = RideRequest.STATUS_CANCELLED
+        ride.save(update_fields=["status", "updated_at"])
+        return Response({"detail": "Ride cancelled.", "status": ride.status})
+
+    @action(detail=True, methods=["post"])
+    def assign(self, request, pk=None):
+        ride = self.get_object()
+        if ride.status != RideRequest.STATUS_REQUESTED:
+            return Response({"detail": "Only requested rides can be assigned."}, status=400)
+        serializer = RideAssignmentSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        assignment = serializer.save()
+        ride.assigned_driver = assignment.driver
+        ride.assigned_vehicle = assignment.vehicle
+        ride.status = RideRequest.STATUS_ASSIGNED
+        ride.save(update_fields=["assigned_driver", "assigned_vehicle", "status", "updated_at"])
+        return Response(RideRequestSerializer(ride, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"])
+    def start_ride(self, request, pk=None):
+        ride = self.get_object()
+        if ride.status != RideRequest.STATUS_ASSIGNED:
+            return Response({"detail": "Only assigned rides can start."}, status=400)
+        trip = ride.ride_trip
+        if trip is None:
+            driver = ride.assigned_driver
+            vehicle = ride.assigned_vehicle
+            if driver is None or vehicle is None:
+                return Response({"detail": "Ride has no driver or vehicle assigned."}, status=400)
+            trip = Trip.objects.create(
+                request=ride,
+                driver=driver,
+                vehicle=vehicle,
+                status=Trip.STATUS_STARTED,
+                start_time=timezone.now(),
+            )
+            ride.ride_trip = trip
+        else:
+            if trip.status != Trip.STATUS_STARTED:
+                return Response({"detail": "Linked trip has not started."}, status=400)
+        ride.status = RideRequest.STATUS_IN_PROGRESS
+        ride.save(update_fields=["status", "updated_at"])
+        return Response(RideRequestSerializer(ride, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"])
+    def complete_ride(self, request, pk=None):
+        ride = self.get_object()
+        if ride.status != RideRequest.STATUS_IN_PROGRESS:
+            return Response({"detail": "Only in-progress rides can complete."}, status=400)
+        trip = ride.ride_trip
+        if trip is None:
+            return Response({"detail": "Ride has no linked trip."}, status=400)
+        if trip.status != Trip.STATUS_PICKED_UP:
+            return Response({"detail": "Trip must be picked up before completing."}, status=400)
+        trip.status = Trip.STATUS_COMPLETED
+        trip.end_time = timezone.now()
+        trip.save(update_fields=["status", "end_time", "updated_at"])
+        ride.status = RideRequest.STATUS_COMPLETED
+        ride.save(update_fields=["status", "updated_at"])
+        RideRecord.objects.update_or_create(
+            ride_request=ride,
+            defaults={
+                "driver": trip.driver,
+                "vehicle": trip.vehicle,
+                "status": RideRequest.STATUS_COMPLETED,
+                "pickup_time": trip.pickup_time,
+                "dropoff_time": trip.dropoff_time,
+                "completed_at": trip.end_time,
+                "notes": trip.notes,
+            },
+        )
+        return Response(RideRequestSerializer(ride, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"])
+    def fail_ride(self, request, pk=None):
+        ride = self.get_object()
+        if ride.status not in (RideRequest.STATUS_ASSIGNED, RideRequest.STATUS_IN_PROGRESS):
+            return Response({"detail": "Cannot fail this ride."}, status=400)
+        ride.status = RideRequest.STATUS_FAILED
+        ride.save(update_fields=["status", "updated_at"])
+        return Response(RideRequestSerializer(ride, context={"request": request}).data)
+
+
+class RideAssignmentViewSet(viewsets.ModelViewSet):
+    queryset = RideAssignment.objects.all().order_by("-assigned_at")
+    serializer_class = RideAssignmentSerializer
+    permission_classes = [BusinessUnitScoped]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if not user or not user.is_authenticated:
+            return qs.none()
+        if user.is_superuser or user.has_role("super_admin"):
+            return qs
+        return qs.filter(ride_request__business_unit=user.business_unit)
+
+
+class RideRecordViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = RideRecord.objects.all().order_by("-completed_at", "-created_at")
+    serializer_class = RideRecordSerializer
+    permission_classes = [BusinessUnitScoped]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if not user or not user.is_authenticated:
+            return qs.none()
+        if user.is_superuser or user.has_role("super_admin"):
+            return qs
+        return qs.filter(ride_request__business_unit=user.business_unit)
+
+
+class RideFareEstimateViewSet(viewsets.ModelViewSet):
+    queryset = RideFareEstimate.objects.all().select_related(
+        "business_unit", "ride_request", "trip__request", "created_by"
+    )
+    serializer_class = RideFareEstimateSerializer
+    permission_classes = [BusinessUnitScoped]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if not user or not user.is_authenticated:
+            return qs.none()
+        if user.is_superuser or user.has_role("super_admin"):
+            return qs
+        return qs.filter(business_unit__in=user.accessible_business_units())
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+    @action(detail=True, methods=["post"])
+    def share(self, request, pk=None):
+        fare = self.get_object()
+        if fare.fare_status != RideFareEstimate.STATUS_DRAFT:
+            return Response({"detail": "Only draft fare estimates can be shared."}, status=400)
+        fare.fare_status = RideFareEstimate.STATUS_SHARED
+        fare.save(update_fields=["fare_status", "updated_at"])
+        fare.refresh_from_db()
+        return Response(RideFareEstimateSerializer(fare, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"])
+    def accept(self, request, pk=None):
+        fare = self.get_object()
+        if fare.fare_status != RideFareEstimate.STATUS_SHARED:
+            return Response({"detail": "Only shared fare estimates can be accepted."}, status=400)
+        fare.fare_status = RideFareEstimate.STATUS_ACCEPTED
+        fare.save(update_fields=["fare_status", "updated_at"])
+        fare.refresh_from_db()
+        return Response(RideFareEstimateSerializer(fare, context={"request": request}).data)
+
+
+class VehicleMaintenanceRecordViewSet(viewsets.ModelViewSet):
+    queryset = VehicleMaintenanceRecord.objects.all().order_by("-service_date", "-created_at")
+    serializer_class = VehicleMaintenanceRecordSerializer
+    permission_classes = [BusinessUnitScoped]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if not user or not user.is_authenticated:
+            return qs.none()
+        if user.is_superuser or user.has_role("super_admin"):
+            return qs
+        return qs.filter(business_unit=user.business_unit)
+
+
+class TransportationExpenseViewSet(viewsets.ModelViewSet):
+    queryset = TransportationExpense.objects.all().order_by("-created_at")
+    serializer_class = TransportationExpenseSerializer
+    permission_classes = [BusinessUnitScoped]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if not user or not user.is_authenticated:
+            return qs.none()
+        if user.is_superuser or user.has_role("super_admin"):
+            return qs
+        return qs.filter(business_unit=user.business_unit)
+
+    def perform_create(self, serializer):
+        serializer.save(submitted_by=self.request.user)
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        expense = self.get_object()
+        if expense.status != TransportationExpense.STATUS_DRAFT:
+            return Response({"detail": "Only draft expenses can be approved."}, status=400)
+        expense.status = TransportationExpense.STATUS_APPROVED
+        expense.approved_by = request.user
+        expense.approved_at = timezone.now()
+        expense.save(update_fields=["status", "approved_by", "approved_at"])
+        return Response(TransportationExpenseSerializer(expense, context={"request": request}).data)
