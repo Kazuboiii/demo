@@ -73,9 +73,8 @@ class AppState extends ChangeNotifier {
   Future<void> detectAndSetApiBase() async {
     try {
       ApiClient.instance.resetDiscovery();
-      await ApiClient.instance.detectApiBase();
-      await Storage.setApiBaseUrl('');
-      _apiBaseUrl = '';
+      final base = await ApiClient.instance.detectApiBase();
+      await setApiBaseUrl(base);
       _error = null;
     } catch (_) {
       _error =
@@ -131,10 +130,7 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  /// One-click sign-in for seeded demo accounts (server-gated by the
-  /// DEMO_LOGIN flag and the per-account is_demo marker). Never sends a
-  /// password; regular accounts are unaffected.
-  Future<void> demoLogin(String email) async {
+  Future<void> roleLogin(String role) async {
     await ready;
     if (_loading) return;
     _loading = true;
@@ -142,8 +138,8 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     try {
       final res = await ApiClient.instance.post(
-        '/auth/demo-login/',
-        body: {'email': email},
+        '/auth/role-login/',
+        body: {'role': role},
       );
       if (res.statusCode == 200) {
         final data = ApiClient.decodeBody(res) as Map<String, dynamic>;
@@ -156,7 +152,7 @@ class AppState extends ChangeNotifier {
         final data = ApiClient.decodeBody(res);
         _error = (data is Map && data['detail'] != null)
             ? data['detail'].toString()
-            : 'Demo sign-in failed (${res.statusCode})';
+            : 'Role selection failed (${res.statusCode})';
       }
     } catch (e) {
       _error = 'Network error: $e';

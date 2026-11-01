@@ -18,7 +18,7 @@ void main() {
       ChangeNotifierProvider.value(value: state, child: const UemsApp()),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Sign in'), findsOneWidget);
+    expect(find.text('Choose your role'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     state.dispose();

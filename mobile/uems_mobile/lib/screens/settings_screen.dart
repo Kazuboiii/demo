@@ -78,7 +78,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 16),
             const Text(
               'Default: the deployed UEMS server. Leave the field empty to use it '
-              '(use Auto-detect on the sign-in screen for a local laptop server).',
+              'For USB testing, use the laptop server URL provided.',
               style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
             const SizedBox(height: 24),

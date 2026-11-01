@@ -48,6 +48,7 @@ class ApiClient {
   Future<http.Response> _check(http.Response response, String path) async {
     if (response.statusCode == 401 &&
         path != '/auth/login/' &&
+        path != '/auth/role-login/' &&
         path != '/auth/logout/') {
       await onUnauthorized?.call();
     }

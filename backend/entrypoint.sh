@@ -7,6 +7,11 @@ if [ "${RUN_MIGRATIONS:-1}" = "1" ]; then
   python manage.py migrate --noinput
 fi
 
+# Explicit sample deployment setup; repeat runs preserve records and balances.
+if [ "${SEED_SAMPLE_DATA:-1}" = "1" ]; then
+  python manage.py seed_workspace
+fi
+
 exec gunicorn uems_config.wsgi:application \
   --bind "0.0.0.0:${PORT:-8000}" \
   --workers "${GUNICORN_WORKERS:-3}" \

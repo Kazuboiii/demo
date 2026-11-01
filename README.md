@@ -126,3 +126,21 @@ Activity is attributed to shared role accounts, not individual people.
 ROLE_LOGIN defaults to true; setting it to false disables these endpoints (the
 role-only entry page will then be unavailable). Database migrations must already
 be applied as in the normal deployment.
+
+### Sample workspace and phone attendance
+
+`python manage.py seed_workspace` adds fictional, SAMPLE-labelled inventory,
+finance records, shared employee profiles, salary structures, and five completed
+eight-hour attendance days (19–23 October 2026, Asia/Kathmandu). Values are
+illustrative NPR amounts, not real salaries or tax guidance. Inventory balances
+are posted through the receipt service and reconcile to ledger movements. Repeat
+runs preserve existing records and do not add stock twice. Container startup runs
+this command when SEED_SAMPLE_DATA=1 (default for this demo deployment); set it
+to 0 to disable sample setup. No manual Render shell is needed after deployment.
+
+Android 1.0.2 (build 3) uses the same six-role picker. Choose Staff for Resort
+attendance. All phones choosing Staff share one employee, so this is suitable
+for demonstrations, not individual employee attendance tracking.
+For USB testing, forward port 8002 with adb reverse, run the laptop backend on
+127.0.0.1:8002, and set the app server to http://127.0.0.1:8002. Clear the saved
+server URL to return to Render after the updated backend is deployed.

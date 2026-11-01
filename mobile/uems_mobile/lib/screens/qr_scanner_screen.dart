@@ -72,7 +72,9 @@ class _QrScannerScreenState extends State<QrScannerScreen>
           setState(
             () => _cameraError = _controller.value.error == null
                 ? null
-                : 'Camera unavailable. Allow camera access in Settings, or enter the token below.',
+                : _controller.value.error?.errorCode == MobileScannerErrorCode.permissionDenied
+                    ? 'Allow camera access in Android Settings, then reopen this screen.'
+                    : 'Camera could not start. Reopen this screen to retry, or use manual entry.',
           );
         }
       } else {

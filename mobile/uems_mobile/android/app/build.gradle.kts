@@ -27,6 +27,11 @@ android {
 
     buildTypes {
         release {
+            // Preserve ML Kit's runtime component discovery in release builds.
+            // The current scanner/ML Kit combination fails during getClient()
+            // when R8 optimizes its dynamically registered components.
+            isMinifyEnabled = false
+            isShrinkResources = false
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")

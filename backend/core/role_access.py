@@ -1,6 +1,6 @@
 """Shared role identities for the public, passwordless workspace picker."""
 from django.db import transaction
-from .models import BusinessUnit, Role, User
+from .models import BusinessUnit, Department, Employee, Role, User
 
 ROLE_CHOICES = (
     ("super_admin", "Super Admin", None),
@@ -30,4 +30,12 @@ def shared_role_user(code):
     if created:
         user.set_unusable_password()
         user.save(update_fields=["password"])
+    employee_unit = unit or units["RESORT"]
+    department, _ = Department.objects.get_or_create(
+        business_unit=employee_unit, name="Demo Operations")
+    Employee.objects.get_or_create(user=user, defaults={
+        "employee_id": f"ROLE-{ROLE_CHOICES.index((code, name, unit_code)) + 1:03d}",
+        "business_unit": employee_unit, "department": department,
+        "designation": f"{name} (shared demo)",
+    })
     return user
